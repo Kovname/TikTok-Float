@@ -144,3 +144,4 @@ Built binaries are output to `dist\TikTok Float.exe` and `dist\win-unpacked\TikT
 ## License
 
 [MIT](package.json)
+
