@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('messagesApi', {
   sendMessage: (text) => ipcRenderer.invoke('messages:send-message', text),
   loadOlder: () => ipcRenderer.invoke('messages:load-older'),
   openVideoInPlayer: (payload) => ipcRenderer.invoke('messages:open-video', payload),
+  openStoryInPlayer: (payload) => ipcRenderer.invoke('messages:open-story', payload),
   forwardComment: (payload) => ipcRenderer.invoke('comments:forward-to-contacts', payload),
   getShareContacts: () => ipcRenderer.invoke('comments:get-contacts'),
   copyText: (text) => ipcRenderer.invoke('app:copy-text', text),
@@ -27,6 +28,9 @@ contextBridge.exposeInMainWorld('messagesApi', {
 
   onSnapshot: (callback) => {
     ipcRenderer.on('messages:snapshot', (_event, snapshot) => callback(snapshot));
+  },
+  onShareContacts: (callback) => {
+    ipcRenderer.on('messages:share-contacts', (_event, info) => callback(info));
   },
   onWindowState: (callback) => {
     ipcRenderer.on('messages:window-state', (_event, next) => callback(next));

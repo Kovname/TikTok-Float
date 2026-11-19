@@ -7,6 +7,10 @@ contextBridge.exposeInMainWorld('appApi', {
   setState: (patch) => ipcRenderer.invoke('app:set-state', patch),
   recordRecentContacts: (contacts) =>
     ipcRenderer.invoke('contacts:record-recent', contacts),
+  updateDialogContactsCache: (contacts) =>
+    ipcRenderer.send('contacts:update-dialog-cache', contacts),
+  sendStealthSendResult: (payload) =>
+    ipcRenderer.send('share:stealth-send-result', payload),
   copyText: (text) => ipcRenderer.invoke('app:copy-text', text),
 
   minimize: () => ipcRenderer.send('window:minimize'),
@@ -54,6 +58,9 @@ contextBridge.exposeInMainWorld('appApi', {
   onMessagesOpenVideo: (callback) => {
     ipcRenderer.on('messages:open-video', (_event, payload) => callback(payload));
   },
+  onMessagesOpenStory: (callback) => {
+    ipcRenderer.on('messages:open-story', (_event, payload) => callback(payload));
+  },
   onMessagesContacts: (callback) => {
     ipcRenderer.on('messages:contacts', (_event, contacts) => callback(contacts));
   },
@@ -63,8 +70,11 @@ contextBridge.exposeInMainWorld('appApi', {
   onMessagesOpenLogin: (callback) => {
     ipcRenderer.on('messages:open-login', () => callback());
   },
-  onShareOpenForComment: (callback) => {
-    ipcRenderer.on('share:open-for-comment', (_event, payload) => callback(payload));
+  onShareRefreshContactsStealth: (callback) => {
+    ipcRenderer.on('share:refresh-contacts-stealth', () => callback());
+  },
+  onShareSendCommentStealth: (callback) => {
+    ipcRenderer.on('share:send-comment-stealth', (_event, payload) => callback(payload));
   },
   onWindowBounds: (callback) => {
     ipcRenderer.on('window:bounds', (_event, info) => callback(info));

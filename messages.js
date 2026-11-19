@@ -18,6 +18,7 @@ const els = {
   inboxOpenWebBtn: $('inboxOpenWebBtn'),
   threadOpenWebBtn: $('threadOpenWebBtn'),
   chatSearch: $('chatSearch'),
+  storiesBar: $('storiesBar'),
   inboxSkeleton: $('inboxSkeleton'),
   inboxEmpty: $('inboxEmpty'),
   chatList: $('chatList'),
@@ -54,6 +55,7 @@ let snapshot = {
   loggedIn: true,
   loading: true,
   conversations: [],
+  stories: [],
   activeHeader: null,
   messages: [],
   unreadTotal: 0
@@ -63,10 +65,13 @@ let inThreadView = false;
 let threadLoading = false;
 let isSending = false;
 let lastChatsSig = '';
+let lastStoriesSig = '';
 let lastMessagesSig = '';
 let activeResizeEdge = null;
 let resizeRaf = 0;
 let toastTimer = null;
+let inboxLoadTimer = null;
+let inboxLoadTimedOut = false;
 let webModeActive = false;
 let webViewInitialized = false;
 
@@ -78,7 +83,9 @@ const LIVE_DM_CSS = `
   [class*="DivHeaderContainer"],
   .drawer-content,
   [class*="DivSideNavContainer"],
-  [data-e2e="nav-bar"] {
+  [data-e2e="nav-bar"],
+  [class*="BusinessSidebar"],
+  [class*="SideNav"] {
     display: none !important;
   }
   html, body {
@@ -88,6 +95,25 @@ const LIVE_DM_CSS = `
   .layout {
     padding-top: 0 !important;
     height: 100vh !important;
+  }
+  .message-iframe,
+  .message-container,
+  .contact-card-container {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    z-index: 50 !important;
+  }
+  .message-iframe iframe {
+    width: 100vw !important;
+    height: 100vh !important;
+    border: 0 !important;
   }
   ::-webkit-scrollbar {
     width: 5px !important;
@@ -167,9 +193,20 @@ async function init() {
   bindChatForwardSheet();
 
   window.messagesApi.onSnapshot(handleSnapshot);
+  if (window.messagesApi.onShareContacts) {
+    window.messagesApi.onShareContacts((info) => {
+      if (info && Array.isArray(info.contacts) && info.contacts.length) {
+        chatForwardContacts = info.contacts;
+        if (chatForwardTarget) renderChatForwardList();
+      }
+    });
+  }
   window.messagesApi.onWindowState((info) => {
     if (info) updateDockUI(Boolean(info.docked));
   });
+
+  armInboxLoadTimeout();
+  renderStoriesBar();
 
   try {
     const initial = await window.messagesApi.getInitialState();
@@ -180,6 +217,18 @@ async function init() {
   } catch (err) {
     console.error(err);
   }
+}
+
+function armInboxLoadTimeout() {
+  clearTimeout(inboxLoadTimer);
+  inboxLoadTimedOut = false;
+  inboxLoadTimer = setTimeout(() => {
+    const convs = Array.isArray(snapshot.conversations) ? snapshot.conversations : [];
+    if (convs.length === 0) {
+      inboxLoadTimedOut = true;
+      renderChatList();
+    }
+  }, 5000);
 }
 
 function bindHeaderControls() {
@@ -195,6 +244,7 @@ function bindHeaderControls() {
   }
   els.refreshBtn.addEventListener('click', async () => {
     toast('Обновляю сообщения…');
+    armInboxLoadTimeout();
     if (webModeActive && els.liveDmView && webViewInitialized) {
       try { els.liveDmView.reload(); } catch {}
     }
@@ -364,15 +414,153 @@ function handleSnapshot(next) {
     };
   }
 
+  if (Array.isArray(next.conversations) && next.conversations.length > 0) {
+    clearTimeout(inboxLoadTimer);
+    inboxLoadTimedOut = false;
+  }
+
   syncViewMode();
+  renderStoriesBar();
   renderChatList();
   renderMessages();
+}
+
+function renderStoriesBar() {
+  if (!els.storiesBar) return;
+  if (snapshot.loggedIn === false) {
+    els.storiesBar.classList.add('hidden');
+    return;
+  }
+
+  const rawStories = Array.isArray(snapshot.stories) ? snapshot.stories : [];
+  const convs = Array.isArray(snapshot.conversations) ? snapshot.conversations : [];
+
+  const merged = [];
+  const seen = new Set();
+  const pushStory = (item) => {
+    if (!item || !item.name) return;
+    const key = String(item.id || item.handle || item.name).trim().toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    merged.push({
+      id: key,
+      name: String(item.name).trim(),
+      handle: String(item.handle || '').replace(/^@/, '').trim(),
+      avatar: String(item.avatar || ''),
+      url: String(item.url || ''),
+      hasStory: Boolean(item.hasStory || item.hasActiveRing)
+    });
+  };
+
+  for (const s of rawStories) pushStory(s);
+  for (const c of convs) {
+    if (merged.length >= 14) break;
+    const hasStoryHint = /(истори|story)/i.test(String(c.lastMessage || ''));
+    pushStory({
+      id: c.id,
+      name: c.name,
+      handle: c.handle,
+      avatar: c.avatar,
+      url: c.handle ? 'https://www.tiktok.com/@' + c.handle : '',
+      hasStory: hasStoryHint
+    });
+  }
+
+  const sig = merged
+    .map((s) => s.id + '|' + s.name + '|' + (s.hasStory ? '1' : '0') + '|' + s.avatar)
+    .join('\n');
+  els.storiesBar.classList.remove('hidden');
+  if (sig === lastStoriesSig && els.storiesBar.childElementCount > 0) return;
+  lastStoriesSig = sig;
+
+  const frag = document.createDocumentFragment();
+
+  // 1-й элемент: «Все истории» -> открывает ленту друзей/историй в основном плеере
+  const allBtn = document.createElement('button');
+  allBtn.type = 'button';
+  allBtn.className = 'story-chip';
+  allBtn.setAttribute('role', 'listitem');
+  allBtn.title = 'Открыть ленту историй друзей в основном плеере';
+  allBtn.innerHTML = `
+    <span class="story-ring all-stories">
+      <span class="story-ring-inner">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke-dasharray="4 3"></circle>
+          <polygon points="10 8.5 16 12 10 15.5 10 8.5" fill="currentColor" stroke="none"></polygon>
+        </svg>
+      </span>
+    </span>
+    <span class="story-name">Истории</span>`;
+  allBtn.addEventListener('click', () => {
+    toast('Открываю истории друзей в плеере…');
+    if (window.messagesApi.openStoryInPlayer) {
+      window.messagesApi.openStoryInPlayer({ isFriendsFeed: true });
+    }
+  });
+  frag.appendChild(allBtn);
+
+  for (const story of merged) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'story-chip';
+    chip.setAttribute('role', 'listitem');
+    chip.title = story.hasStory
+      ? 'Открыть историю ' + story.name
+      : 'Открыть публикации и истории ' + story.name;
+
+    const ring = document.createElement('span');
+    ring.className = 'story-ring' + (story.hasStory ? ' has-story' : '');
+    const inner = document.createElement('span');
+    inner.className = 'story-ring-inner';
+    if (story.avatar) {
+      const img = document.createElement('img');
+      img.src = story.avatar;
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      img.addEventListener('error', () => {
+        img.remove();
+        inner.textContent = story.name.charAt(0).toUpperCase() || 'U';
+      });
+      inner.appendChild(img);
+    } else {
+      inner.textContent = story.name.charAt(0).toUpperCase() || 'U';
+    }
+    ring.appendChild(inner);
+
+    const label = document.createElement('span');
+    label.className = 'story-name';
+    label.textContent = story.name;
+
+    chip.appendChild(ring);
+    chip.appendChild(label);
+    chip.addEventListener('click', () => {
+      toast('Открываю: ' + story.name);
+      if (window.messagesApi.openStoryInPlayer) {
+        if (story.url) {
+          window.messagesApi.openStoryInPlayer({
+            url: story.url,
+            friendName: story.name,
+            isFriendsFeed: false
+          });
+        } else {
+          window.messagesApi.openStoryInPlayer({
+            isFriendsFeed: true,
+            friendName: story.name
+          });
+        }
+      }
+    });
+    frag.appendChild(chip);
+  }
+
+  els.storiesBar.innerHTML = '';
+  els.storiesBar.appendChild(frag);
 }
 
 function renderChatList() {
   const convs = Array.isArray(snapshot.conversations) ? snapshot.conversations : [];
 
-  if (convs.length === 0 && snapshot.loading) {
+  if (convs.length === 0 && snapshot.loading && !inboxLoadTimedOut) {
     els.chatList.innerHTML = '';
     lastChatsSig = '';
     els.inboxSkeleton.classList.remove('hidden');
@@ -543,6 +731,8 @@ function renderMessages() {
           '|' +
           (m.forwardedComment ? m.forwardedComment.author + m.forwardedComment.text : '') +
           '|' +
+          (m.isStory ? 'S' : '') +
+          '|' +
           (m.video ? m.video.url + m.video.thumb : '')
       )
       .join('\n');
@@ -697,6 +887,37 @@ function renderMessages() {
       bubble.className = 'msg-bubble';
       bubble.textContent = m.text;
       row.appendChild(bubble);
+    }
+
+    if (m.isStory) {
+      const storyBtn = document.createElement('button');
+      storyBtn.type = 'button';
+      storyBtn.className = 'story-badge-btn';
+      storyBtn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke-dasharray="4 3"></circle>
+          <polygon points="10 8.5 16 12 10 15.5 10 8.5" fill="currentColor" stroke="none"></polygon>
+        </svg>
+        <span>История друга · Смотреть</span>`;
+      storyBtn.addEventListener('click', () => {
+        toast('Открываю историю друга в плеере…');
+        if (window.messagesApi.openStoryInPlayer) {
+          const handle = selectedChat && selectedChat.handle ? String(selectedChat.handle).replace(/^@/, '') : '';
+          window.messagesApi.openStoryInPlayer(
+            handle
+              ? {
+                  url: 'https://www.tiktok.com/@' + handle,
+                  friendName: selectedChat ? selectedChat.name : 'История',
+                  isFriendsFeed: false
+                }
+              : {
+                  isFriendsFeed: true,
+                  friendName: selectedChat ? selectedChat.name : 'Истории друзей'
+                }
+          );
+        }
+      });
+      row.appendChild(storyBtn);
     }
 
     if (m.timeText) {
@@ -874,7 +1095,14 @@ function renderChatForwardList() {
   }
 
   els.chatForwardList.innerHTML = '';
-  els.chatForwardList.appendChild(frag);
+  if (filtered.length === 0) {
+    const emptyLi = document.createElement('li');
+    emptyLi.className = 'chat-forward-empty';
+    emptyLi.textContent = q ? 'Контакты не найдены' : 'Загружаю контакты TikTok…';
+    els.chatForwardList.appendChild(emptyLi);
+  } else {
+    els.chatForwardList.appendChild(frag);
+  }
   els.chatForwardSendBtn.disabled = chatForwardSelected.size === 0 || chatForwardSending;
   els.chatForwardSendBtn.textContent = chatForwardSending
     ? 'Отправка…'
@@ -893,6 +1121,7 @@ async function submitChatForward() {
 
   try {
     const res = await window.messagesApi.forwardComment({
+      fromChat: true,
       contacts: chosen,
       comment: {
         authorName: chatForwardTarget.authorName,
@@ -906,8 +1135,10 @@ async function submitChatForward() {
     if (res && res.ok) {
       toast('Комментарий переслан');
       closeChatForwardSheet();
+    } else if (res && res.loginRequired) {
+      toast('Войди в TikTok по QR-коду');
     } else {
-      toast('Не удалось переслать комментарий');
+      toast('Не удалось переслать — проверь вход в TikTok');
     }
   } finally {
     chatForwardSending = false;

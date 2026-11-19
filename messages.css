@@ -1191,3 +1191,131 @@ button {
   align-items: center;
   gap: 8px;
 }
+
+.chat-forward-empty {
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ─── Панель «Истории друзей» в списке чатов ─────────────────────── */
+
+.stories-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 2px 12px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--hairline-soft);
+  scrollbar-width: none;
+}
+
+.stories-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.story-chip {
+  flex: 0 0 auto;
+  width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  transition: transform 130ms var(--ease), color 140ms var(--ease);
+}
+
+.story-chip:hover {
+  color: var(--text-primary);
+}
+
+.story-chip:active {
+  transform: scale(0.94);
+}
+
+.story-ring {
+  width: 46px;
+  height: 46px;
+  padding: 2px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  display: grid;
+  place-items: center;
+}
+
+.story-ring.has-story {
+  background: linear-gradient(135deg, #25f4ee 0%, #fe2c55 55%, #ff8a3d 100%);
+}
+
+.story-ring.all-stories {
+  background: linear-gradient(135deg, #25f4ee 0%, #ff2d55 100%);
+}
+
+.story-ring-inner {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #1b1b22;
+  border: 2px solid var(--surface);
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.story-ring-inner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.story-ring-inner svg {
+  width: 18px;
+  height: 18px;
+  color: #ffffff;
+}
+
+.story-name {
+  width: 100%;
+  text-align: center;
+  font-size: 10.5px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-badge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #ffffff;
+  background: linear-gradient(135deg, rgba(37, 244, 238, 0.2), rgba(255, 45, 85, 0.26));
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  transition: transform 120ms var(--ease), border-color 140ms var(--ease);
+}
+
+.story-badge-btn:hover {
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.story-badge-btn:active {
+  transform: scale(0.97);
+}
+
+.story-badge-btn svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+}

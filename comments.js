@@ -25,7 +25,6 @@ const els = {
   sendBtn: $('sendBtn'),
   forwardSheet: $('forwardSheet'),
   forwardCopyBtn: $('forwardCopyBtn'),
-  forwardOpenMainBtn: $('forwardOpenMainBtn'),
   forwardCloseBtn: $('forwardCloseBtn'),
   forwardPreviewAuthor: $('forwardPreviewAuthor'),
   forwardPreviewText: $('forwardPreviewText'),
@@ -896,17 +895,6 @@ function bindForwardSheet() {
     closeForwardSheet();
   });
 
-  els.forwardOpenMainBtn.addEventListener('click', async () => {
-    if (!forwardTarget) return;
-    await window.commentsApi.forwardComment({
-      openInMainShare: true,
-      comment: forwardTarget,
-      video: getForwardVideoMeta(),
-      note: els.forwardNoteInput.value.trim()
-    });
-    closeForwardSheet();
-  });
-
   els.forwardActiveChatBtn.addEventListener('click', () => {
     if (!forwardActiveHeader || !forwardActiveHeader.name) return;
     submitForwardComment([
@@ -1089,8 +1077,10 @@ async function submitForwardComment(overrideContacts) {
           : 'Комментарий отправлен (' + chosen.length + ')';
       toast(label);
       closeForwardSheet();
+    } else if (res && res.loginRequired) {
+      toast('Войди в TikTok по QR-коду');
     } else {
-      toast('Не удалось переслать комментарий');
+      toast('Не удалось переслать — проверь вход в TikTok');
     }
   } finally {
     forwardSending = false;

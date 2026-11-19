@@ -17,6 +17,11 @@ const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const DM_ENGINE = require('./dm-engine');
 
+// Убираем спам Chromium WebRTC STUN в консоли (stun.l.google.com, errorcode -105)
+try {
+  app.commandLine.appendSwitch('force-webrtc-ip-handling-policy', 'disable_non_proxied_udp');
+} catch {}
+
 const APP_TITLE = 'TikTok Float';
 const APP_ID = 'ru.tiktokfloat.desktop';
 const APP_DIR = __dirname;
@@ -513,6 +518,61 @@ function animateMainBounds(target, durationMs = 190) {
 
 let dmScrollingChats = false;
 let dmLoggedFirstChats = false;
+let allowBusinessSuiteFallback = false;
+let businessSuiteCheckTimer = null;
+const cachedDmConversations = new Map();
+const cachedDmStories = [];
+const dmDebugTimeline = [];
+let dialogContactsFromMain = [];
+let stealthSendSeq = 0;
+const pendingStealthSendResolvers = new Map();
+
+function logDmDebug(event, detail) {
+  const entry = {
+    t: new Date().toISOString(),
+    event: String(event || ''),
+    detail: detail ? String(detail).slice(0, 220) : ''
+  };
+  dmDebugTimeline.push(entry);
+  if (dmDebugTimeline.length > 45) dmDebugTimeline.shift();
+  try {
+    console.log('[DM-DEBUG]', entry.event, entry.detail);
+  } catch {}
+}
+
+function getTikTokDmFrames() {
+  if (!dmEngineWin || dmEngineWin.isDestroyed()) return [];
+  try {
+    const mainFrame = dmEngineWin.webContents.mainFrame;
+    if (!mainFrame) return [];
+    const list = Array.isArray(mainFrame.framesInSubtree)
+      ? mainFrame.framesInSubtree
+      : [mainFrame];
+    return list.filter((f) => {
+      if (!f || f.isDestroyed && f.isDestroyed()) return false;
+      const u = String(f.url || '');
+      return Boolean(u && u !== 'about:blank' && !/google|doubleclick|analytics|recaptcha/i.test(u));
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function injectDmEngineIntoAllFrames() {
+  if (!dmEngineWin || dmEngineWin.isDestroyed()) return;
+  const frames = getTikTokDmFrames();
+  for (const frame of frames) {
+    try {
+      const snap = await frame.executeJavaScript(DM_ENGINE.controller, true);
+      dmEngineReady = true;
+      if (snap && typeof snap === 'object') {
+        if (!snap.isOuterShell || (snap.conversations && snap.conversations.length > 0)) {
+          handleDmSnapshot(snap);
+        }
+      }
+    } catch {}
+  }
+}
 
 function ensureDmEngine() {
   if (dmEngineWin && !dmEngineWin.isDestroyed()) {
@@ -521,6 +581,10 @@ function ensureDmEngine() {
 
   dmEngineReady = false;
   dmLoggedFirstChats = false;
+  allowBusinessSuiteFallback = false;
+  clearTimeout(businessSuiteCheckTimer);
+  logDmDebug('engine-create', TIKTOK_MESSAGES_URL);
+
   dmEngineWin = new BrowserWindow({
     width: 1180,
     height: 540,
@@ -548,36 +612,72 @@ function ensureDmEngine() {
     return { action: 'deny' };
   });
 
-  const injectEngine = async () => {
-    if (!dmEngineWin || dmEngineWin.isDestroyed()) return;
-    try {
-      const snap = await dmEngineWin.webContents.executeJavaScript(DM_ENGINE.controller, true);
-      dmEngineReady = true;
-      if (snap && typeof snap === 'object') handleDmSnapshot(snap);
-      setTimeout(() => {
-        scrollDmChatListTrusted().catch(() => {});
-      }, 1500);
-    } catch (err) {
-      console.warn('DM engine inject failed:', err);
+  const handleBusinessSuiteRedirect = (event, url, sourceEvent) => {
+    if (!url || !/\/business-suite\/messages/i.test(url)) return;
+    if (allowBusinessSuiteFallback) {
+      logDmDebug('allowing-business-suite', sourceEvent + ' -> ' + url);
+      return;
     }
+    // Блокируем редирект с /messages на /business-suite/messages (чтобы загрузившиеся чаты не исчезали через секунду!)
+    event.preventDefault();
+    logDmDebug('blocked-business-suite-redirect', sourceEvent + ' -> ' + url);
+
+    clearTimeout(businessSuiteCheckTimer);
+    businessSuiteCheckTimer = setTimeout(async () => {
+      if (!dmEngineWin || dmEngineWin.isDestroyed()) return;
+      await injectDmEngineIntoAllFrames();
+      const rowsNow = await dmEval(
+        'window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.hasChatRows ? window.__TTF_DM_ENGINE__.hasChatRows() : false'
+      );
+      if (rowsNow) {
+        logDmDebug('stayed-on-messages-ok', 'chat rows intact on /messages');
+        scrollDmChatListTrusted().catch(() => {});
+        writeDmDebug('stayed-on-messages-ok');
+      } else {
+        // Если TikTok всё же размонтировал DOM на /messages — включаем режим /business-suite/messages и подключаемся прямо внутрь его <iframe>!
+        allowBusinessSuiteFallback = true;
+        logDmDebug('fallback-to-business-suite-iframe', url);
+        dmEngineWin.loadURL(url, { userAgent: CHROME_UA }).catch(() => {});
+      }
+    }, 2200);
+  };
+
+  dmEngineWin.webContents.on('will-navigate', (e, url) =>
+    handleBusinessSuiteRedirect(e, url, 'will-navigate')
+  );
+  dmEngineWin.webContents.on('will-redirect', (e, url) =>
+    handleBusinessSuiteRedirect(e, url, 'will-redirect')
+  );
+
+  const onFrameReady = async (tag) => {
+    if (!dmEngineWin || dmEngineWin.isDestroyed()) return;
+    logDmDebug('frame-ready', tag + ' frames=' + getTikTokDmFrames().length);
+    await injectDmEngineIntoAllFrames();
+    setTimeout(() => {
+      scrollDmChatListTrusted().catch(() => {});
+    }, 1200);
   };
 
   const captureVideoNav = (_e, url) => {
     if (isTikTokVideoUrl(url)) {
       dmPendingVideoUrl = url;
     } else if (url && /\/messages/i.test(url)) {
+      logDmDebug('navigated', url);
       setTimeout(() => {
-        injectEngine().catch(() => {});
-      }, 600);
+        injectDmEngineIntoAllFrames().catch(() => {});
+      }, 650);
     }
   };
   dmEngineWin.webContents.on('did-navigate-in-page', captureVideoNav);
   dmEngineWin.webContents.on('did-navigate', captureVideoNav);
-
-  dmEngineWin.webContents.on('dom-ready', injectEngine);
-  dmEngineWin.webContents.on('did-finish-load', injectEngine);
+  dmEngineWin.webContents.on('dom-ready', () => onFrameReady('dom-ready'));
+  dmEngineWin.webContents.on('did-finish-load', () => onFrameReady('did-finish-load'));
+  dmEngineWin.webContents.on('did-frame-finish-load', (_e, isMainFrame) => {
+    if (!isMainFrame) onFrameReady('child-iframe-loaded');
+  });
 
   dmEngineWin.on('closed', () => {
+    clearTimeout(businessSuiteCheckTimer);
     dmEngineWin = null;
     dmEngineReady = false;
   });
@@ -743,15 +843,43 @@ async function openDmChatTrusted(chatId, index, name) {
   return { ok: true, count: lastSnap && lastSnap.messages ? lastSnap.messages.length : 0 };
 }
 
-/** Диагностика структуры /messages (тексты усечены) — для быстрой донастройки парсера */
+/** Полная многофреймовая диагностика /messages и дочерних <iframe> -> dm-debug.json */
 async function writeDmDebug(reason) {
   try {
-    const dump = await dmEval('window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.debugDump() : null');
-    if (!dump) return;
-    fs.writeFileSync(
-      path.join(app.getPath('userData'), 'dm-debug.json'),
-      JSON.stringify({ reason, at: new Date().toISOString(), dump }, null, 2)
-    );
+    if (!dmEngineWin || dmEngineWin.isDestroyed()) return;
+    const frames = getTikTokDmFrames();
+    const frameDumps = [];
+    for (const f of frames) {
+      try {
+        await f.executeJavaScript(DM_ENGINE.controller, true).catch(() => {});
+        const d = await f.executeJavaScript(
+          'window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.debugDump() : null',
+          true
+        );
+        frameDumps.push({
+          frameUrl: f.url,
+          isMainFrame: f === dmEngineWin.webContents.mainFrame,
+          dump: d
+        });
+      } catch (err) {
+        frameDumps.push({
+          frameUrl: f.url,
+          isMainFrame: f === dmEngineWin.webContents.mainFrame,
+          error: String(err)
+        });
+      }
+    }
+    const payload = {
+      reason,
+      at: new Date().toISOString(),
+      allowBusinessSuiteFallback,
+      cachedConversationsCount: cachedDmConversations.size,
+      timeline: dmDebugTimeline.slice(-25),
+      frames: frameDumps
+    };
+    const outPath = path.join(app.getPath('userData'), 'dm-debug.json');
+    fs.writeFileSync(outPath, JSON.stringify(payload, null, 2));
+    logDmDebug('wrote-debug', reason + ' frames=' + frameDumps.length + ' cached=' + cachedDmConversations.size);
   } catch {}
 }
 
@@ -804,6 +932,37 @@ async function dmEval(expression) {
   }
   if (!dmEngineWin || dmEngineWin.isDestroyed()) return null;
   try {
+    const mainFrame = dmEngineWin.webContents.mainFrame;
+    const frames = getTikTokDmFrames();
+    if (frames.length > 1) {
+      // 1) Ищем дочерний iframe (например на /business-suite/messages), в котором уже есть строки диалогов
+      for (const f of frames) {
+        if (f === mainFrame) continue;
+        try {
+          const hasRows = await f.executeJavaScript(
+            'Boolean(window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.hasChatRows && window.__TTF_DM_ENGINE__.hasChatRows())',
+            true
+          );
+          if (hasRows) {
+            return await f.executeJavaScript(expression, true);
+          }
+        } catch {}
+      }
+      // 2) Если в mainFrame строк нет, а дочерний iframe есть — пробуем его
+      const mainHasRows = await mainFrame
+        .executeJavaScript(
+          'Boolean(window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.hasChatRows && window.__TTF_DM_ENGINE__.hasChatRows())',
+          true
+        )
+        .catch(() => false);
+      if (!mainHasRows) {
+        const child = frames.find((f) => f !== mainFrame);
+        if (child) {
+          await child.executeJavaScript(DM_ENGINE.controller, true).catch(() => {});
+          return await child.executeJavaScript(expression, true);
+        }
+      }
+    }
     return await dmEngineWin.webContents.executeJavaScript(expression, true);
   } catch {
     return null;
@@ -865,7 +1024,12 @@ function getMergedShareContacts() {
   if (state && Array.isArray(state.recentContacts)) {
     for (const c of state.recentContacts) pushContact(c, true);
   }
-  if (latestDmSnapshot && Array.isArray(latestDmSnapshot.conversations)) {
+  if (Array.isArray(dialogContactsFromMain)) {
+    dialogContactsFromMain.forEach((c, idx) => pushContact(c, idx < 6));
+  }
+  if (cachedDmConversations.size > 0) {
+    for (const c of cachedDmConversations.values()) pushContact(c, true);
+  } else if (latestDmSnapshot && Array.isArray(latestDmSnapshot.conversations)) {
     for (const c of latestDmSnapshot.conversations) pushContact(c, true);
   }
 
@@ -933,8 +1097,35 @@ async function sendTextToDmContacts(contacts, messageText) {
   return { ok: sent > 0, sentCount: sent };
 }
 
-function handleDmSnapshot(snapshot) {
-  if (!snapshot || typeof snapshot !== 'object') return;
+function handleDmSnapshot(rawSnapshot) {
+  if (!rawSnapshot || typeof rawSnapshot !== 'object') return;
+  const snapshot = { ...rawSnapshot };
+
+  // Сохраняем все найденные чаты в кэш, чтобы при смене фрейма или обновлении страницы чаты НИКОГДА не пропадали через секунду!
+  if (Array.isArray(snapshot.conversations) && snapshot.conversations.length > 0) {
+    for (const c of snapshot.conversations) {
+      if (!c || !c.id) continue;
+      const prev = cachedDmConversations.get(c.id) || {};
+      cachedDmConversations.set(c.id, {
+        ...prev,
+        ...c,
+        avatar: c.avatar || prev.avatar || '',
+        handle: c.handle || prev.handle || '',
+        lastMessage: c.lastMessage || prev.lastMessage || ''
+      });
+    }
+  } else if (snapshot.loggedIn !== false && cachedDmConversations.size > 0) {
+    snapshot.conversations = Array.from(cachedDmConversations.values());
+    snapshot.loading = false;
+  }
+
+  if (Array.isArray(snapshot.stories) && snapshot.stories.length > 0) {
+    cachedDmStories.length = 0;
+    cachedDmStories.push(...snapshot.stories);
+  } else if (cachedDmStories.length > 0) {
+    snapshot.stories = [...cachedDmStories];
+  }
+
   latestDmSnapshot = snapshot;
 
   if (
@@ -943,6 +1134,7 @@ function handleDmSnapshot(snapshot) {
     snapshot.conversations.length > 0
   ) {
     dmLoggedFirstChats = true;
+    logDmDebug('first-chats-loaded', 'count=' + snapshot.conversations.length + ' href=' + (snapshot.href || ''));
     writeDmDebug('first-chats:' + snapshot.conversations.length);
   }
 
@@ -1811,6 +2003,26 @@ function setupIpc() {
     return { docked: state.commentsDocked };
   });
 
+  ipcMain.on('contacts:update-dialog-cache', (_event, contacts) => {
+    if (!Array.isArray(contacts) || !contacts.length) return;
+    dialogContactsFromMain = contacts;
+    if (commentsWin && !commentsWin.isDestroyed()) {
+      commentsWin.webContents.send('comments:contacts', getMergedShareContacts());
+    }
+    if (messagesWin && !messagesWin.isDestroyed()) {
+      messagesWin.webContents.send('messages:share-contacts', getMergedShareContacts());
+    }
+  });
+
+  ipcMain.on('share:stealth-send-result', (_event, payload) => {
+    if (!payload || !payload.reqId) return;
+    const resolver = pendingStealthSendResolvers.get(payload.reqId);
+    if (resolver) {
+      pendingStealthSendResolvers.delete(payload.reqId);
+      resolver(payload.result || { ok: false });
+    }
+  });
+
   ipcMain.handle('comments:get-initial', () => ({
     data: latestCommentsPayload,
     docked: state.commentsDocked,
@@ -1819,21 +2031,14 @@ function setupIpc() {
 
   ipcMain.handle('comments:get-contacts', () => {
     ensureDmEngine();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('share:refresh-contacts-stealth');
+    }
     return getMergedShareContacts();
   });
 
   ipcMain.handle('comments:forward-to-contacts', async (_event, payload) => {
     if (!payload || typeof payload !== 'object') return { ok: false };
-
-    if (payload.openInMainShare) {
-      if (win && !win.isDestroyed()) {
-        win.show();
-        win.focus();
-        win.webContents.send('share:open-for-comment', payload);
-        return { ok: true, delegatedToMain: true };
-      }
-      return { ok: false };
-    }
 
     const contacts = Array.isArray(payload.contacts) ? payload.contacts : [];
     if (!contacts.length) return { ok: false };
@@ -1848,7 +2053,59 @@ function setupIpc() {
         : 'https://www.tiktok.com/video/' + video.videoId;
     }
 
-    const messageText = formatForwardedCommentMessage(comment, videoUrl, payload.note || '');
+    const rawAuth =
+      comment.authorHandle
+        ? '@' + String(comment.authorHandle).replace(/^@/, '').trim()
+        : comment.authorName || comment.author || 'Пользователь';
+    const quoteText = comment.text ? '«' + String(comment.text).trim() + '»' : '[медиа-комментарий]';
+    const userNote = payload.note ? String(payload.note).trim() : '';
+    const dialogNote =
+      '💬 Комментарий ' + rawAuth + ': ' + quoteText + (userNote ? ' — ' + userNote : '');
+    const messageText = formatForwardedCommentMessage(comment, videoUrl, userNote);
+
+    const targetVideoIdMatch = videoUrl.match(/\/(?:video|photo)\/(\d{12,})/);
+    const targetVideoId = (video.videoId && String(video.videoId)) || (targetVideoIdMatch ? targetVideoIdMatch[1] : '');
+    const currentPlayerVideoId =
+      latestCommentsPayload && latestCommentsPayload.videoId ? String(latestCommentsPayload.videoId) : '';
+    const canUseStealthDialog =
+      payload.fromChat === true
+        ? Boolean(targetVideoId && currentPlayerVideoId && targetVideoId === currentPlayerVideoId)
+        : payload.preferStealthDialog !== false;
+
+    // 1) Основной путь (тот же самый, что идеально работает в плеере!): тихая отправка через диалог «Поделиться» в основном <webview> (без открытия окна плеера)
+    if (win && !win.isDestroyed() && canUseStealthDialog) {
+      const reqId = 'fwd_' + (++stealthSendSeq) + '_' + Date.now();
+      const stealthRes = await new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          pendingStealthSendResolvers.delete(reqId);
+          resolve(null);
+        }, 8500);
+        pendingStealthSendResolvers.set(reqId, (res) => {
+          clearTimeout(timer);
+          resolve(res);
+        });
+        win.webContents.send('share:send-comment-stealth', {
+          reqId,
+          contacts,
+          note: dialogNote
+        });
+      });
+
+      if (stealthRes && stealthRes.ok) {
+        let totalSent = Number(stealthRes.sentCount) || 0;
+        if (Array.isArray(stealthRes.unmatchedTargets) && stealthRes.unmatchedTargets.length > 0) {
+          const restRes = await sendTextToDmContacts(stealthRes.unmatchedTargets, messageText);
+          if (restRes && restRes.ok) totalSent += Number(restRes.sentCount) || 0;
+        }
+        recordRecentContactsList(contacts);
+        return { ok: true, via: 'stealth-dialog', sentCount: totalSent || contacts.length };
+      }
+      if (stealthRes && stealthRes.loginRequired) {
+        return { ok: false, loginRequired: true };
+      }
+    }
+
+    // 2) Запасной путь через фоновый движок ЛС (для контактов вне быстрого ряда «Поделиться» и пересылки из чата)
     return sendTextToDmContacts(contacts, messageText);
   });
 
@@ -1937,8 +2194,11 @@ function setupIpc() {
   });
 
   ipcMain.handle('messages:refresh', async () => {
+    allowBusinessSuiteFallback = false;
+    clearTimeout(businessSuiteCheckTimer);
     if (dmEngineWin && !dmEngineWin.isDestroyed()) {
       dmEngineReady = false;
+      logDmDebug('manual-refresh', TIKTOK_MESSAGES_URL);
       dmEngineWin.loadURL(TIKTOK_MESSAGES_URL, { userAgent: CHROME_UA }).catch(() => {});
       setTimeout(() => {
         scrollDmChatListTrusted().catch(() => {});
@@ -2007,6 +2267,20 @@ function setupIpc() {
     win.webContents.send('messages:open-video', {
       url,
       chatName: String(payload.chatName || 'Чат')
+    });
+    return true;
+  });
+
+  ipcMain.handle('messages:open-story', async (_event, payload) => {
+    if (!win || win.isDestroyed()) return false;
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const url = String(p.url || '').trim() || 'https://www.tiktok.com/friends?lang=ru';
+    const label = String(p.friendName || '').trim();
+    win.show();
+    win.webContents.send('messages:open-story', {
+      url,
+      friendName: label,
+      isFriendsFeed: !p.url || /\/friends/i.test(url)
     });
     return true;
   });

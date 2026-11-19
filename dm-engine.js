@@ -9,17 +9,63 @@
  * - Извлекает сообщения и присланные видео 3 уровнями: строки сообщений + React Fiber (JSON msg.content с aweme_id) + геометрический TreeWalker-сканер по всей правой области чата.
  */
 function tiktokFloatDmEngine() {
-  if (window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.version >= 7) {
+  if (window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.version >= 8) {
     return window.__TTF_DM_ENGINE__.snapshot();
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const cleanText = (el) => (el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '');
+  const isIframeContext = (() => {
+    try { return window !== window.top; } catch { return true; }
+  })();
 
   function emit(type, data) {
     try {
-      window.postMessage({ __ttfDmBridge: true, payload: { type, data } }, '*');
+      const msg = { __ttfDmBridge: true, payload: { type, data } };
+      window.postMessage(msg, '*');
+      if (isIframeContext && window.top) {
+        window.top.postMessage(msg, '*');
+      }
     } catch {}
+  }
+
+  function expandOuterMessageIframe() {
+    if (isIframeContext) return false;
+    const iframeWrap = document.querySelector('.message-iframe');
+    if (!iframeWrap) return false;
+    if (!document.getElementById('__ttf_bs_iframe_css')) {
+      try {
+        const st = document.createElement('style');
+        st.id = '__ttf_bs_iframe_css';
+        st.textContent = `
+          .message-iframe, .message-container, .contact-card-container {
+            position: fixed !important;
+            inset: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            max-width: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            z-index: 99999 !important;
+          }
+          .message-iframe iframe {
+            width: 100vw !important;
+            height: 100vh !important;
+            border: 0 !important;
+          }
+        `;
+        (document.head || document.documentElement).appendChild(st);
+      } catch {}
+    }
+    return true;
+  }
+
+  function isOuterIframeShell() {
+    if (isIframeContext) return false;
+    const hasMsgIframe = Boolean(document.querySelector('.message-iframe iframe, .message-container iframe'));
+    if (hasMsgIframe) expandOuterMessageIframe();
+    return hasMsgIframe;
   }
 
   let lastStateHash = '';
@@ -40,13 +86,16 @@ function tiktokFloatDmEngine() {
     if (!el) return false;
     if (
       el.closest(
-        'header, .header, #tiktok-sdk-tiktok-header-container, [data-e2e="top-navbar"], [class*="DivHeaderContainer"]'
+        '.header, #tiktok-sdk-tiktok-header-container, [data-e2e="top-navbar"], [class*="DivHeaderContainer"]'
       )
     ) {
       return true;
     }
-    const r = el.getBoundingClientRect();
-    return r.bottom <= 62 && r.top < 20;
+    if (!isIframeContext) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom <= 62 && r.top < 20 && el.closest('header')) return true;
+    }
+    return false;
   }
 
   function extractAvatarUrl(root) {
@@ -110,10 +159,11 @@ function tiktokFloatDmEngine() {
 
     // Геометрический фоллбэк для Business Suite / Semi-UI / Tailwind-списков диалогов в левой колонке
     const geoCandidates = [];
+    const minTop = isIframeContext ? -4 : 75;
     for (const el of document.querySelectorAll('div, li')) {
       if (isTopGlobalHeader(el)) continue;
       const r = el.getBoundingClientRect();
-      if (r.top < 75 || r.left < 0 || r.left > 360) continue;
+      if (r.top < minTop || r.left < 0 || r.left > 360) continue;
       if (r.width < 160 || r.width > 460 || r.height < 46 || r.height > 112) continue;
       const ava = el.querySelector('img, [class*="Avatar"], [class*="avatar"]');
       if (!ava) continue;
@@ -658,12 +708,13 @@ function tiktokFloatDmEngine() {
       }
     }
 
+    const minTop = isIframeContext ? 0 : 45;
     const candidates = Array.from(document.querySelectorAll('div, main, section')).filter((el) => {
       if (isTopGlobalHeader(el)) return false;
       const r = el.getBoundingClientRect();
       return (
         r.left >= paneLeft - 20 &&
-        r.top >= 45 &&
+        r.top >= minTop &&
         r.width >= 280 &&
         r.height >= 260 &&
         r.right <= window.innerWidth + 24
@@ -818,12 +869,13 @@ function tiktokFloatDmEngine() {
     ).find((el) => !isTopGlobalHeader(el) && el.getBoundingClientRect().left >= paneLeft - 24);
     if (direct) return direct;
 
+    const minTop = isIframeContext ? -2 : 48;
     for (const el of scope.querySelectorAll('header, div')) {
       if (isTopGlobalHeader(el)) continue;
       const r = el.getBoundingClientRect();
       if (
         r.left >= paneLeft - 20 &&
-        r.top >= 48 &&
+        r.top >= minTop &&
         r.top <= 170 &&
         r.bottom <= 235 &&
         r.height >= 28 &&
@@ -1053,6 +1105,7 @@ function tiktokFloatDmEngine() {
         text,
         video,
         forwardedComment,
+        isStory: Boolean(text && /(?:истори|story|stories)/i.test(text)),
         images,
         timeText
       });
@@ -1317,6 +1370,9 @@ function tiktokFloatDmEngine() {
         if (parsedFc.forwardedComment) {
           m.forwardedComment = parsedFc.forwardedComment;
         }
+        if (m.text && /(?:истори|story|stories)/i.test(m.text)) {
+          m.isStory = true;
+        }
       }
       if (m.video) m.video.domIndex = idx;
       lastGenericEls[idx] = m._el || null;
@@ -1334,8 +1390,68 @@ function tiktokFloatDmEngine() {
     return out;
   }
 
+  function scrapeStories(conversations) {
+    const out = [];
+    const seen = new Set();
+
+    const addStory = (item) => {
+      if (!item || !item.name) return;
+      const key = String(item.handle || item.name).toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push({
+        id: key,
+        name: item.name,
+        handle: item.handle || '',
+        avatar: item.avatar || '',
+        url: item.url || (item.handle ? 'https://www.tiktok.com/@' + item.handle : ''),
+        hasStory: Boolean(item.hasStory || item.hasActiveRing),
+        hasActiveRing: Boolean(item.hasStory || item.hasActiveRing)
+      });
+    };
+
+    // 1) Ищем элементы историй в DOM (аватарки со Story-кольцом)
+    const storyEls = document.querySelectorAll(
+      '[data-e2e*="story" i], [class*="StoryItem" i], [class*="StoryRing" i], [class*="AvatarStory" i]'
+    );
+    for (const el of storyEls) {
+      if (isTopGlobalHeader(el)) continue;
+      const row = el.closest('[data-e2e="chat-list-item"], [class*="DivItemWrapper"], [class*="ConversationItem"], a') || el;
+      const name = extractRowNickname(row);
+      if (!name || name.length > 48) continue;
+      const avatar = extractAvatarUrl(row);
+      let handle = '';
+      const link = row.querySelector('a[href*="/@"]') || (row.tagName === 'A' ? row : null);
+      if (link) {
+        const m = (link.getAttribute('href') || '').match(/\/@([^/?#]+)/);
+        if (m) handle = m[1];
+      }
+      addStory({ name, handle, avatar, hasActiveRing: true });
+    }
+
+    // 2) Дополняем друзьями из списка чатов (в первую очередь тех, у кого в превью есть «история» / story или свежая активность)
+    if (Array.isArray(conversations) && conversations.length) {
+      const prioritized = [...conversations].sort((a, b) => {
+        const aStory = /(?:истори|story)/i.test(a.lastMessage || '') ? 1 : 0;
+        const bStory = /(?:истори|story)/i.test(b.lastMessage || '') ? 1 : 0;
+        if (aStory !== bStory) return bStory - aStory;
+        return (b.unreadCount || 0) - (a.unreadCount || 0);
+      });
+      for (const c of prioritized.slice(0, 14)) {
+        addStory({
+          name: c.name,
+          handle: c.handle,
+          avatar: c.avatar,
+          hasActiveRing: /(?:истори|story)/i.test(c.lastMessage || '') || (c.unreadCount || 0) > 0
+        });
+      }
+    }
+
+    return out;
+  }
+
   function debugDump() {
-    const trunc = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    const trunc = (s) => String(s || '').replace(/\s+/g, ' ').trim().slice(0, 28);
     const describe = (el) => {
       const r = el.getBoundingClientRect();
       return {
@@ -1354,7 +1470,8 @@ function tiktokFloatDmEngine() {
       }
       if (isTopGlobalHeader(el)) return false;
       const r = el.getBoundingClientRect();
-      return r.top >= 54 && r.left >= -4 && r.width >= 20 && r.height >= 14;
+      const minTop = isIframeContext ? 0 : 54;
+      return r.top >= minTop && r.left >= -4 && r.width >= 20 && r.height >= 14;
     };
     const paneLeft = getChatPaneLeftBoundary();
     const rows = findChatRowElements();
@@ -1364,19 +1481,31 @@ function tiktokFloatDmEngine() {
     const allVisual = Array.from(document.querySelectorAll('*')).filter(isVisualEl);
     const leftNodes = allVisual
       .filter((el) => el.getBoundingClientRect().left < paneLeft)
-      .slice(0, 45)
+      .slice(0, 40)
       .map(describe);
     const rightNodes = allVisual
       .filter((el) => el.getBoundingClientRect().left >= paneLeft - 10)
-      .slice(0, 55)
+      .slice(0, 50)
       .map(describe);
+    const iframes = Array.from(document.querySelectorAll('iframe')).map((f) => {
+      const r = f.getBoundingClientRect();
+      return {
+        src: String(f.src || f.getAttribute('src') || '').slice(0, 180),
+        cls: String(f.className || '').slice(0, 64),
+        rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]
+      };
+    });
 
     return {
       href: location.href,
+      isIframe: isIframeContext,
+      isOuterShell: isOuterIframeShell(),
       viewport: [window.innerWidth, window.innerHeight],
       paneLeft,
       chatRowsInDom: rows.length,
+      chatRowsSample: rows.slice(0, 8).map((r) => trunc(r.textContent)),
       seenChatsTotal: seenChats.size,
+      iframes,
       chatScroller: sc ? { ...describe(sc), scrollH: sc.scrollHeight, clientH: sc.clientHeight, scrollT: sc.scrollTop } : null,
       editorFound: Boolean(findMessageEditor()),
       chatMain: chatMain ? describe(chatMain) : null,
@@ -1388,15 +1517,20 @@ function tiktokFloatDmEngine() {
   }
 
   function snapshot() {
-    const loggedOut = isLoggedOutDom();
+    const outerShell = isOuterIframeShell();
+    const loggedOut = outerShell ? false : isLoggedOutDom();
     const conversations = loggedOut ? [] : scrapeConversations();
     const active = loggedOut ? { header: null, messages: [] } : scrapeActiveChat(conversations);
     const unreadTotal = conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
+    const stories = loggedOut ? [] : scrapeStories(conversations);
 
     return {
       loggedIn: !loggedOut,
       loading: !loggedOut && !hasLoadedChatsOnce && conversations.length === 0,
+      isIframe: isIframeContext,
+      isOuterShell: outerShell,
       conversations,
+      stories,
       activeHeader: active.header,
       messages: active.messages,
       unreadTotal,
@@ -1406,11 +1540,16 @@ function tiktokFloatDmEngine() {
 
   function emitSnapshot(force) {
     const data = snapshot();
+    // Внешняя оболочка /business-suite/messages без строк чатов (все чаты внутри iframe) не должна затирать реальный список чатов!
+    if (data.isOuterShell && data.conversations.length === 0) {
+      return;
+    }
     const hash = JSON.stringify({
       l: data.loggedIn,
       ld: data.loading,
       u: data.unreadTotal,
       h: data.activeHeader ? data.activeHeader.name : '',
+      s: (data.stories || []).length,
       c: data.conversations.map((x) => x.id + ':' + x.lastMessage + ':' + x.timeText + ':' + x.unreadCount + ':' + (x.active ? 1 : 0)),
       m: data.messages.map((x) => x.id + ':' + (x.video ? x.video.url : '') + ':' + (x.text || '').slice(0, 24))
     });
@@ -1751,7 +1890,8 @@ function tiktokFloatDmEngine() {
   }, 650);
 
   window.__TTF_DM_ENGINE__ = {
-    version: 7,
+    version: 8,
+    hasChatRows: () => findChatRowElements().length > 0,
     snapshot,
     emitSnapshot,
     locateChatRow,

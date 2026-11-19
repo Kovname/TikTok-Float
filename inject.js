@@ -1208,6 +1208,7 @@ function tiktokFloatPageController() {
 
     const tiles = findShareContactElements();
     let matched = 0;
+    const unmatchedTargets = [];
 
     for (const target of targetList) {
       const wantName = String(target.name || '').trim().toLowerCase();
@@ -1222,55 +1223,64 @@ function tiktokFloatPageController() {
           found.element.click();
           matched++;
           await sleep(220);
-        } catch {}
+        } catch {
+          unmatchedTargets.push(target);
+        }
+      } else {
+        unmatchedTargets.push(target);
       }
     }
 
     if (matched === 0) {
-      return { ok: false, reason: 'not_in_quick_row' };
+      return { ok: false, reason: 'not_in_quick_row', unmatchedTargets };
     }
 
-    // Если после выбора контакта появилось поле подписи и кнопка «Отправить»
-    const activeModals = findShareModals();
-    for (const dlg of activeModals) {
-      if (noteText && String(noteText).trim()) {
-        const noteInput = dlg.querySelector(
-          'textarea, [contenteditable="true"], input[type="text"], input[placeholder*="сообщ" i], input[placeholder*="message" i]'
-        );
-        if (noteInput) {
-          noteInput.focus();
-          const text = String(noteText).trim();
-          if (noteInput.tagName === 'TEXTAREA' || noteInput.tagName === 'INPUT') {
-            const proto =
-              noteInput.tagName === 'TEXTAREA'
-                ? HTMLTextAreaElement.prototype
-                : HTMLInputElement.prototype;
-            const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-            if (setter) setter.call(noteInput, text);
-            else noteInput.value = text;
-            noteInput.dispatchEvent(new Event('input', { bubbles: true }));
-          } else {
-            try { document.execCommand('insertText', false, text); } catch {}
+    // Если после выбора контакта появилось поле подписи и кнопка «Отправить» (даём React до 3 попыток смонтировать блок)
+    let clickedSend = false;
+    for (let attempt = 0; attempt < 3 && !clickedSend; attempt++) {
+      const activeModals = findShareModals();
+      for (const dlg of activeModals) {
+        if (noteText && String(noteText).trim()) {
+          const noteInput = dlg.querySelector(
+            'textarea, [contenteditable="true"], input[type="text"], input[placeholder*="сообщ" i], input[placeholder*="message" i]'
+          );
+          if (noteInput) {
+            noteInput.focus();
+            const text = String(noteText).trim();
+            if (noteInput.tagName === 'TEXTAREA' || noteInput.tagName === 'INPUT') {
+              const proto =
+                noteInput.tagName === 'TEXTAREA'
+                  ? HTMLTextAreaElement.prototype
+                  : HTMLInputElement.prototype;
+              const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+              if (setter) setter.call(noteInput, text);
+              else noteInput.value = text;
+              noteInput.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+              try { document.execCommand('insertText', false, text); } catch {}
+            }
+            await sleep(160);
           }
-          await sleep(160);
+        }
+
+        const sendBtn = Array.from(dlg.querySelectorAll('button, div[role="button"]')).find((b) =>
+          /^(отправить|send)(\s*\(\d+\))?$/i.test(cleanText(b))
+        );
+        if (sendBtn && !sendBtn.disabled) {
+          sendBtn.click();
+          clickedSend = true;
+          await sleep(500);
+          break;
         }
       }
-
-      const sendBtn = Array.from(dlg.querySelectorAll('button, div[role="button"]')).find((b) =>
-        /^(отправить|send)(\s*\(\d+\))?$/i.test(cleanText(b))
-      );
-      if (sendBtn && !sendBtn.disabled) {
-        sendBtn.click();
-        await sleep(500);
-        break;
-      }
+      if (!clickedSend) await sleep(140);
     }
 
     await sleep(350);
     closeShareDialogOnly();
     clearStealthShareModals();
     document.documentElement.classList.remove('ttf-stealth-share');
-    return { ok: true, sentCount: matched };
+    return { ok: true, sentCount: matched, unmatchedTargets };
   }
 
   /* ─── Вход по QR-коду (в 1 клик) ───────────────────────────────── */

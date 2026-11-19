@@ -127,12 +127,13 @@
             <button id="modeDoneBtn" class="mode-done-btn" type="button">Готово</button>
           </div>
 
-          <!-- Вкладки источника: «Рекомендации» / «Чат: Имя ×» (появляются при открытии ролика из ЛС) -->
-          <div id="sourceTabs" class="source-tabs hidden" role="tablist" aria-label="Источник видео">
+          <!-- Вкладки источника: «Рекомендации» / «Истории» / «Чат: Имя ×» -->
+          <div id="sourceTabs" class="source-tabs" role="tablist" aria-label="Источник видео">
             <button id="tabFeedBtn" class="source-tab active" type="button" role="tab" aria-selected="true">Рекомендации</button>
-            <div id="tabChatWrap" class="source-tab-chat" role="tab" aria-selected="false">
+            <button id="tabFriendsBtn" class="source-tab" type="button" role="tab" aria-selected="false" title="Истории и видео друзей">Истории</button>
+            <div id="tabChatWrap" class="source-tab-chat hidden" role="tab" aria-selected="false">
               <button id="tabChatBtn" class="source-tab-label" type="button">Чат</button>
-              <button id="tabChatCloseBtn" class="source-tab-close" type="button" title="Закрыть вкладку чата" aria-label="Закрыть вкладку чата">
+              <button id="tabChatCloseBtn" class="source-tab-close" type="button" title="Закрыть вкладку" aria-label="Закрыть вкладку">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
                   <path d="M7 7l10 10"></path>
                   <path d="M17 7L7 17"></path>
@@ -410,22 +411,12 @@
         <section id="shareSheet" class="share-sheet hidden" role="dialog" aria-label="Отправить контактам">
           <div class="share-grabber" aria-hidden="true"></div>
           <div class="share-header">
-            <h2 id="shareSheetTitle" class="share-title">Отправить</h2>
+            <h2 class="share-title">Отправить</h2>
             <button id="shareCloseBtn" class="share-close-btn" type="button" title="Закрыть" aria-label="Закрыть">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
                 <path d="M7 7l10 10"></path>
                 <path d="M17 7L7 17"></path>
               </svg>
-            </button>
-          </div>
-
-          <div id="shareCommentBanner" class="share-comment-banner hidden">
-            <div class="share-comment-info">
-              <span id="shareCommentAuthor" class="share-comment-author">@author</span>
-              <span id="shareCommentText" class="share-comment-text"></span>
-            </div>
-            <button id="shareCommentClearBtn" class="share-comment-clear" type="button" title="Отправить только видео" aria-label="Убрать комментарий">
-              ×
             </button>
           </div>
 

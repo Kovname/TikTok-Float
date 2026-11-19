@@ -64,6 +64,7 @@ const els = {
 
   sourceTabs: $('sourceTabs'),
   tabFeedBtn: $('tabFeedBtn'),
+  tabFriendsBtn: $('tabFriendsBtn'),
   tabChatWrap: $('tabChatWrap'),
   tabChatBtn: $('tabChatBtn'),
   tabChatCloseBtn: $('tabChatCloseBtn'),
@@ -130,11 +131,6 @@ const els = {
   browserBtn: $('browserBtn'),
 
   shareSheet: $('shareSheet'),
-  shareSheetTitle: $('shareSheetTitle'),
-  shareCommentBanner: $('shareCommentBanner'),
-  shareCommentAuthor: $('shareCommentAuthor'),
-  shareCommentText: $('shareCommentText'),
-  shareCommentClearBtn: $('shareCommentClearBtn'),
   shareCloseBtn: $('shareCloseBtn'),
   shareSearchInput: $('shareSearchInput'),
   shareSkeleton: $('shareSkeleton'),
@@ -166,9 +162,12 @@ let ready = false;
 let dmViewReady = false;
 let dmViewInitialized = false;
 let dmViewCleanupKey = null;
-let activeTab = 'feed'; // 'feed' | 'chat'
+let activeTab = 'feed'; // 'feed' | 'friends' | 'chat'
 let chatTabName = '';
 let chatTabOpen = false;
+let lastChatVideoPayload = null;
+let friendsUrlLoaded = false;
+let dmViewMode = 'none'; // 'none' | 'friends' | 'chat'
 let cleanupKey = null;
 let toastTimer = null;
 let loadingTimer = null;
@@ -183,7 +182,6 @@ let commentsOpening = false;
 let messagesOpen = false;
 let settingsOpen = false;
 let shareOpen = false;
-let pendingForwardComment = null;
 let interactiveModal = false;
 let qrLoginMode = false;
 let onboardingPromptedThisSession = false;
@@ -225,11 +223,11 @@ const gesture = {
 document.addEventListener('DOMContentLoaded', init);
 
 function activeView() {
-  return activeTab === 'chat' && chatTabOpen ? els.dmVideoView : els.view;
+  return activeTab !== 'feed' ? els.dmVideoView : els.view;
 }
 
 function activeReady() {
-  return activeTab === 'chat' && chatTabOpen ? dmViewReady : ready;
+  return activeTab !== 'feed' ? dmViewReady : ready;
 }
 
 function activeGuestId() {
@@ -270,14 +268,20 @@ async function init() {
   window.appApi.onCommentsAction(handleCommentsAction);
   window.appApi.onMessagesWindowState(handleMessagesWindowState);
   window.appApi.onMessagesOpenVideo(handleOpenDmVideo);
+  if (window.appApi.onMessagesOpenStory) {
+    window.appApi.onMessagesOpenStory(handleOpenFriendStory);
+  }
   window.appApi.onMessagesContacts(handleIncomingDmContacts);
   window.appApi.onMessagesUnread(updateUnreadMessagesUI);
   window.appApi.onMessagesOpenLogin(() => startQrLogin());
-  if (window.appApi.onShareOpenForComment) {
-    window.appApi.onShareOpenForComment((payload) => {
-      if (payload && payload.comment) {
-        openShareSheet(payload.comment, payload.note || '');
-      }
+  if (window.appApi.onShareRefreshContactsStealth) {
+    window.appApi.onShareRefreshContactsStealth(() => {
+      handleStealthRefreshContacts().catch(() => {});
+    });
+  }
+  if (window.appApi.onShareSendCommentStealth) {
+    window.appApi.onShareSendCommentStealth((payload) => {
+      handleStealthSendComment(payload).catch(() => {});
     });
   }
   window.appApi.onWindowBounds(handleWindowBounds);
@@ -466,10 +470,13 @@ function handleExternalState(next) {
   }
 }
 
-/* ─── Вкладки источника: «Рекомендации» / «Чат: Имя ×» ────────────── */
+/* ─── Вкладки источника: «Рекомендации» / «Истории» / «Чат: Имя ×» ── */
 
 function bindSourceTabs() {
   els.tabFeedBtn.addEventListener('click', () => switchSourceTab('feed'));
+  if (els.tabFriendsBtn) {
+    els.tabFriendsBtn.addEventListener('click', () => openFriendsStoriesFeed());
+  }
   els.tabChatBtn.addEventListener('click', () => switchSourceTab('chat'));
   els.tabChatCloseBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -490,7 +497,7 @@ function initDmVideoViewOnce() {
 
   els.dmVideoView.addEventListener('dom-ready', onDmVideoDomReady);
   els.dmVideoView.addEventListener('ipc-message', (ev) => {
-    if (activeTab === 'chat') onWebviewIpcMessage(ev);
+    if (activeTab !== 'feed') onWebviewIpcMessage(ev);
   });
 }
 
@@ -518,12 +525,60 @@ async function onDmVideoDomReady() {
   if (token !== dmReadyToken) return;
 
   dmViewReady = true;
-  if (activeTab === 'chat') {
+  if (activeTab !== 'feed') {
     await pushSettingsToPage();
     setZoomOnView(els.dmVideoView, appState.zoom);
     hideLoadingSoon(200);
     if (commentsOpen) ensureCommentsOpen(false);
   }
+}
+
+async function openFriendsStoriesFeed() {
+  closeShareSheet();
+  closeSettings();
+  initDmVideoViewOnce();
+
+  if (ready) {
+    evalOnView(els.view, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
+  }
+
+  const alreadyOnFriends = dmViewMode === 'friends' && friendsUrlLoaded && dmViewReady;
+  activeTab = 'friends';
+  dmViewMode = 'friends';
+  syncTabButtonsUI();
+  els.view.classList.add('hidden');
+  els.dmVideoView.classList.remove('hidden');
+
+  if (alreadyOnFriends) {
+    await evalOnView(els.dmVideoView, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(false) : false');
+    const hud = await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.status() : null');
+    if (hud && hud.ok) applyHudUpdate(hud);
+    if (commentsOpen) ensureCommentsOpen(false);
+    return;
+  }
+
+  dmViewReady = false;
+  friendsUrlLoaded = true;
+  showLoading('Истории друзей', 'Загружаю ленту друзей и историй TikTok');
+  const friendsUrl = 'https://www.tiktok.com/friends?lang=ru';
+  try {
+    const p = els.dmVideoView.loadURL(friendsUrl);
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+  } catch {
+    els.dmVideoView.src = friendsUrl;
+  }
+}
+
+async function handleOpenFriendStory(payload) {
+  if (!payload || payload.isFriendsFeed) {
+    await openFriendsStoriesFeed();
+    return;
+  }
+  await handleOpenDmVideo({
+    url: payload.url,
+    chatName: payload.friendName ? 'История: ' + payload.friendName : 'История друга',
+    rawTabLabel: true
+  });
 }
 
 async function handleOpenDmVideo(payload) {
@@ -532,10 +587,17 @@ async function handleOpenDmVideo(payload) {
   closeSettings();
   initDmVideoViewOnce();
 
-  chatTabName = payload.chatName ? 'Чат: ' + payload.chatName : 'Чат';
+  lastChatVideoPayload = { ...payload };
+  chatTabName = payload.rawTabLabel
+    ? payload.chatName || 'История'
+    : payload.chatName
+      ? 'Чат: ' + payload.chatName
+      : 'Чат';
   chatTabOpen = true;
+  dmViewMode = 'chat';
+  friendsUrlLoaded = false;
   els.tabChatBtn.textContent = chatTabName;
-  els.sourceTabs.classList.remove('hidden');
+  els.tabChatWrap.classList.remove('hidden');
 
   // Ставим на паузу ленту рекомендаций (не теряем позицию!)
   if (ready) {
@@ -547,7 +609,7 @@ async function handleOpenDmVideo(payload) {
   els.view.classList.add('hidden');
   els.dmVideoView.classList.remove('hidden');
   dmViewReady = false;
-  showLoading(chatTabName, 'Открываю ролик из сообщения');
+  showLoading(chatTabName, payload.rawTabLabel ? 'Открываю историю друга' : 'Открываю ролик из сообщения');
 
   try {
     const p = els.dmVideoView.loadURL(payload.url);
@@ -560,18 +622,26 @@ async function handleOpenDmVideo(payload) {
 async function switchSourceTab(nextTab) {
   if (nextTab === activeTab) return;
   if (nextTab === 'chat' && !chatTabOpen) return;
+  if (nextTab === 'friends') {
+    await openFriendsStoriesFeed();
+    return;
+  }
+  if (nextTab === 'chat' && dmViewMode !== 'chat' && lastChatVideoPayload) {
+    await handleOpenDmVideo(lastChatVideoPayload);
+    return;
+  }
 
   // Ставим на паузу уходящую вкладку
   if (activeTab === 'feed' && ready) {
     await evalOnView(els.view, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
-  } else if (activeTab === 'chat' && dmViewReady) {
+  } else if (activeTab !== 'feed' && dmViewReady) {
     await evalOnView(els.dmVideoView, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
   }
 
   activeTab = nextTab;
   syncTabButtonsUI();
   els.view.classList.toggle('hidden', activeTab !== 'feed');
-  els.dmVideoView.classList.toggle('hidden', activeTab !== 'chat');
+  els.dmVideoView.classList.toggle('hidden', activeTab === 'feed');
 
   if (activeReady()) {
     await evalOnView(activeView(), 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(false) : false');
@@ -583,11 +653,14 @@ async function switchSourceTab(nextTab) {
 
 async function closeChatTab() {
   chatTabOpen = false;
-  els.sourceTabs.classList.add('hidden');
+  lastChatVideoPayload = null;
+  els.tabChatWrap.classList.add('hidden');
   if (dmViewReady) {
     await evalOnView(els.dmVideoView, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
   }
   dmViewReady = false;
+  dmViewMode = 'none';
+  friendsUrlLoaded = false;
   try { els.dmVideoView.loadURL('about:blank'); } catch { els.dmVideoView.src = 'about:blank'; }
   els.dmVideoView.classList.add('hidden');
   els.view.classList.remove('hidden');
@@ -604,10 +677,16 @@ async function closeChatTab() {
 
 function syncTabButtonsUI() {
   const isFeed = activeTab === 'feed';
+  const isFriends = activeTab === 'friends';
+  const isChat = activeTab === 'chat';
   els.tabFeedBtn.classList.toggle('active', isFeed);
   els.tabFeedBtn.setAttribute('aria-selected', String(isFeed));
-  els.tabChatWrap.classList.toggle('active', !isFeed);
-  els.tabChatWrap.setAttribute('aria-selected', String(!isFeed));
+  if (els.tabFriendsBtn) {
+    els.tabFriendsBtn.classList.toggle('active', isFriends);
+    els.tabFriendsBtn.setAttribute('aria-selected', String(isFriends));
+  }
+  els.tabChatWrap.classList.toggle('active', isChat);
+  els.tabChatWrap.setAttribute('aria-selected', String(isChat));
 }
 
 /* ─── Webview и интеграция с TikTok ──────────────────────────────── */
@@ -659,9 +738,12 @@ function onWebviewIpcMessage(event) {
       window.appApi.pushCommentsData(msg.data);
     }
   } else if (msg.type === 'auto-next') {
-    if (activeTab === 'feed') navigate(1);
+    if (activeTab === 'feed' || activeTab === 'friends') navigate(1);
   } else if (msg.type === 'contacts' && Array.isArray(msg.data)) {
     dialogContactsCache = msg.data;
+    if (window.appApi.updateDialogContactsCache) {
+      window.appApi.updateDialogContactsCache(dialogContactsCache);
+    }
     if (shareOpen) renderShareContacts();
   }
 }
@@ -1059,15 +1141,8 @@ function handleIncomingDmContacts(contacts) {
 function bindShareSheet() {
   els.hudShareBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    openShareSheet(null, '');
+    openShareSheet();
   });
-
-  if (els.shareCommentClearBtn) {
-    els.shareCommentClearBtn.addEventListener('click', () => {
-      pendingForwardComment = null;
-      syncShareCommentBanner();
-    });
-  }
 
   els.shareCloseBtn.addEventListener('click', closeShareSheet);
   els.shareQrBtn.addEventListener('click', startQrLogin);
@@ -1226,18 +1301,16 @@ function updateShareSendButton() {
       : 'Отправить';
 }
 
-async function openShareSheet(forwardCommentObj, initialNote) {
+async function openShareSheet() {
   if (!activeReady()) {
     toast('Лента ещё загружается');
     return;
   }
   closeSettings();
   shareOpen = true;
-  pendingForwardComment = forwardCommentObj || null;
   shareSelectedIds.clear();
   els.shareSearchInput.value = '';
-  els.shareNoteInput.value = initialNote || '';
-  syncShareCommentBanner();
+  els.shareNoteInput.value = '';
   els.shareSheet.classList.remove('hidden');
   els.bezel.classList.add('chrome-open', 'share-open');
 
@@ -1268,6 +1341,9 @@ async function openShareSheet(forwardCommentObj, initialNote) {
             }
             if (scraped.contacts && scraped.contacts.length > 0) {
               dialogContactsCache = scraped.contacts;
+              if (window.appApi.updateDialogContactsCache) {
+                window.appApi.updateDialogContactsCache(dialogContactsCache);
+              }
               els.shareSkeleton.classList.add('hidden');
               renderShareContacts();
               break;
@@ -1283,29 +1359,108 @@ async function openShareSheet(forwardCommentObj, initialNote) {
   }
 }
 
-function syncShareCommentBanner() {
-  if (!els.shareCommentBanner) return;
-  if (pendingForwardComment) {
-    const auth = pendingForwardComment.authorHandle
-      ? '@' + String(pendingForwardComment.authorHandle).replace(/^@/, '')
-      : pendingForwardComment.authorName || 'Комментарий';
-    els.shareCommentAuthor.textContent = '💬 ' + auth;
-    els.shareCommentText.textContent = pendingForwardComment.text
-      ? '«' + pendingForwardComment.text + '»'
-      : '[медиа-комментарий]';
-    els.shareCommentBanner.classList.remove('hidden');
-    if (els.shareSheetTitle) els.shareSheetTitle.textContent = 'Переслать комментарий';
-  } else {
-    els.shareCommentBanner.classList.add('hidden');
-    if (els.shareSheetTitle) els.shareSheetTitle.textContent = 'Отправить';
+async function handleStealthRefreshContacts() {
+  if (!activeReady() || actionBusy || shareOpen) {
+    if (dialogContactsCache.length > 0 && window.appApi.updateDialogContactsCache) {
+      window.appApi.updateDialogContactsCache(dialogContactsCache);
+    }
+    return;
+  }
+  actionBusy = true;
+  try {
+    const sharePrep = await trustedClickTarget('share');
+    if (sharePrep && sharePrep.ok) {
+      for (let i = 0; i < 9; i++) {
+        await delay(160);
+        const scraped = await pageEval(
+          'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.scrapeShareDialogContacts() : null'
+        );
+        if (scraped && scraped.contacts && scraped.contacts.length > 0) {
+          dialogContactsCache = scraped.contacts;
+          if (window.appApi.updateDialogContactsCache) {
+            window.appApi.updateDialogContactsCache(dialogContactsCache);
+          }
+          break;
+        }
+      }
+    }
+  } finally {
+    await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.cancelStealthShare() : null');
+    actionBusy = false;
+  }
+}
+
+async function handleStealthSendComment(payload) {
+  if (!payload || !payload.reqId) return;
+  const finish = (result) => {
+    if (window.appApi.sendStealthSendResult) {
+      window.appApi.sendStealthSendResult({ reqId: payload.reqId, result });
+    }
+  };
+  if (!activeReady()) {
+    finish({ ok: false });
+    return;
+  }
+  for (let w = 0; w < 20 && actionBusy; w++) {
+    await delay(120);
+  }
+  if (actionBusy) {
+    finish({ ok: false });
+    return;
+  }
+  actionBusy = true;
+  try {
+    let foundDialog = false;
+    const preScraped = await pageEval(
+      'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.scrapeShareDialogContacts() : null'
+    );
+    if (preScraped && preScraped.dialogOpen && preScraped.contacts && preScraped.contacts.length > 0) {
+      foundDialog = true;
+    } else {
+      const sharePrep = await trustedClickTarget('share');
+      if (!sharePrep || !sharePrep.ok) {
+        finish({ ok: false });
+        return;
+      }
+      for (let i = 0; i < 12; i++) {
+        await delay(160);
+        const scraped = await pageEval(
+          'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.scrapeShareDialogContacts() : null'
+        );
+        if (scraped) {
+          if (scraped.loginRequired) {
+            finish({ ok: false, loginRequired: true });
+            return;
+          }
+          if (scraped.contacts && scraped.contacts.length > 0) {
+            dialogContactsCache = scraped.contacts;
+            if (window.appApi.updateDialogContactsCache) {
+              window.appApi.updateDialogContactsCache(dialogContactsCache);
+            }
+            foundDialog = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!foundDialog) {
+      finish({ ok: false });
+      return;
+    }
+    const res = await pageEval(
+      'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.sendVideoToContactsInDialog(' +
+        JSON.stringify(payload.contacts || []) + ',' + JSON.stringify(payload.note || '') + ') : null'
+    );
+    finish(res || { ok: false });
+  } finally {
+    await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.cancelStealthShare() : null');
+    actionBusy = false;
   }
 }
 
 async function closeShareSheet() {
   if (!shareOpen) return;
   shareOpen = false;
-  pendingForwardComment = null;
-  syncShareCommentBanner();
   shareSelectedIds.clear();
   els.shareSheet.classList.add('hidden');
   els.bezel.classList.remove('share-open');
@@ -1325,18 +1480,7 @@ async function submitShareToContacts() {
   updateShareSendButton();
 
   try {
-    const userNote = els.shareNoteInput.value.trim();
-    const note = pendingForwardComment
-      ? '💬 Комментарий ' +
-        (pendingForwardComment.authorHandle
-          ? '@' + String(pendingForwardComment.authorHandle).replace(/^@/, '')
-          : pendingForwardComment.authorName || 'Пользователь') +
-        ': «' +
-        (pendingForwardComment.text || '') +
-        '»' +
-        (userNote ? ' — ' + userNote : '')
-      : userNote;
-
+    const note = els.shareNoteInput.value.trim();
     let res = await pageEval(
       'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.sendVideoToContactsInDialog(' +
         JSON.stringify(chosen) + ',' + JSON.stringify(note) + ') : null'
@@ -1354,12 +1498,11 @@ async function submitShareToContacts() {
         (await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.getCurrentVideoUrl() : ""')) ||
         (currentHud && currentHud.videoUrl) ||
         '';
-      if (videoUrl || pendingForwardComment) {
+      if (videoUrl) {
         res = await window.appApi.sendVideoViaDm({
           contacts: chosen,
           videoUrl,
-          comment: pendingForwardComment,
-          note: userNote
+          note
         });
       }
     }
@@ -1978,10 +2121,10 @@ async function setPlaybackSpeed(rate) {
 
 async function navigate(direction) {
   if (activeTab === 'chat') {
-    toast('Переключись на вкладку «Рекомендации», чтобы листать ленту');
+    toast('Переключись на «Рекомендации» или «Истории», чтобы листать');
     return;
   }
-  if (!ready) {
+  if (!activeReady()) {
     toast('Лента ещё загружается');
     return;
   }
@@ -2227,7 +2370,7 @@ function changeOpacity() {
 
 async function reloadFeed() {
   if (!appState) return;
-  if (activeTab === 'chat') {
+  if (activeTab === 'chat' || activeTab === 'friends') {
     try { els.dmVideoView.reload(); } catch {}
     return;
   }
