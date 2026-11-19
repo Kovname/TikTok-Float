@@ -1,99 +1,146 @@
 # TikTok Float
 
-Плавающее окно TikTok для Windows в стиле iOS Picture-in-Picture: без стандартной рамки Windows, с мягким скруглением, управлением жестами, плавным изменением размера и отдельным окном комментариев.
+> A frameless, iOS Picture-in-Picture style floating TikTok desktop client for Windows — built with Electron, featuring always-on-top video playback, gesture controls, docked comments, native iMessage-style Direct Messages, Friends' Stories, and LIVE stream filtering.
 
-> Это неофициальная программа, не связанная с TikTok. Используй её на свой страх и риск и соблюдай правила сервиса.
+![Windows](https://img.shields.io/badge/Platform-Windows%20x64-0078D6?style=flat-square&logo=windows&logoColor=white)
+![Electron](https://img.shields.io/badge/Electron-45-47848F?style=flat-square&logo=electron&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-30D158?style=flat-square)
 
-## Запуск
+> **Disclaimer:** This is an unofficial desktop wrapper and is not affiliated with, endorsed by, or connected to TikTok. Use at your own discretion and follow TikTok's Terms of Service.
 
-- **Готовый `.exe`**: запусти **`dist\TikTok Float.exe`** (портативный один файл, можно скопировать в любое место, например на рабочий стол) или **`dist\win-unpacked\TikTok Float.exe`** (моментальный старт без распаковки).
-- **Из исходников**: дважды щёлкни по **`TikTok Float.vbs`** (или **`start-debug.bat`** для логов).
-- **Пересборка `.exe`**: выполни в папке проекта `npm run build`.
+---
 
-## Интерфейс и жесты
+## Preview
 
-Веб-интерфейс TikTok автоматически очищается от бокового меню, верхней шапки, баннеров и десктопных панелей и заменяется на полноэкранный iOS HUD поверх ролика.
+### Floating PiP Player & Docked Comments
+Full-bleed video playback with TikTok's desktop chrome stripped away, replaced by an auto-hiding iOS glass HUD and a seamlessly docked Comments sheet with real-time likes, replies, media/GIF previews, and comment forwarding.
 
-### Жесты на видео
+![Floating PiP Player and Docked Comments](docs/screenshots/player-and-comments.png)
 
-| Жест | Действие |
+### Direct Messages, Friends' Stories & Forwarded Comments
+A dedicated iMessage-inspired DM window with a Friends' Stories strip at the top, unread badges, shared TikTok video cards (clickable to open directly inside the floating player on a separate tab), native replies, and comment forwarding. *(Chat names and avatars below use anonymized demo placeholders.)*
+
+![Direct Messages and Friends Stories](docs/screenshots/chat-and-stories.png)
+
+### iOS Settings Sheet, Hide LIVE Toggle & Volume Control
+Quick-access settings sheet (`···`) with playback speed (`0.5×`–`2×`), Auto-Scroll modes, the **Hide LIVE streams** switch, window size presets, floating vertical volume control, opacity, feed zoom, and one-click QR sign-in.
+
+![Settings Sheet and Volume Control](docs/screenshots/settings-and-controls.png)
+
+---
+
+## Key Features
+
+- **Frameless iOS Picture-in-Picture Window**
+  - Always-on-top floating bezel with rounded corners and soft refraction borders.
+  - Auto-hiding HUD: controls fade away cleanly when the cursor leaves the window.
+  - Drag by the top iOS pill; resize smoothly from any edge or corner (aspect-ratio locked on corners, hold `Shift` for free aspect), scroll `Ctrl + Wheel`, or switch between **Mini / Compact / Standard / Large** presets.
+- **Gestures & One-Click Reactions**
+  - Single click to play/pause, double click to like/unlike, long-press (~0.5 s) to repost/remove repost with a circular progress ring.
+  - One-click **Like**, **Comments**, **Send to DM**, and **Repost / Remove Repost** pills in the bottom HUD bar.
+  - Floating vertical iOS **Volume Slider** with mouse-wheel support directly over the speaker icon.
+- **LIVE Stream Protection & Filter**
+  - Blocks buggy or accidental automatic redirects and SPA jumps to `/live` and `/@user/live` pages so the feed never gets hijacked.
+  - **Hide LIVE streams** toggle in `···` (enabled by default): strips LIVE items directly from `/api/recommend/item_list` responses before React renders them, and instantly mutes & skips any preloaded LIVE card in your scroll direction.
+- **Smart Auto-Scroll**
+  - **End of video** (default): automatically advances to the next video as soon as the current clip finishes.
+  - **Timer interval** (5–60 s): automatically advances on a fixed interval (also used automatically for photo posts).
+- **Docked Comments Window (`C`)**
+  - Separate iOS-style sheet docked beside the player (can be undocked and resized freely).
+  - Strictly video-scoped: main-world `/api/comment/list` interception + per-card React Fiber `aweme_id` verification guarantees comments from a previous video never leak onto the next video when scrolling quickly.
+  - Supports photos, GIFs, and stickers with full-screen lightbox preview, nested replies, accumulative infinite scroll (never wipes previously loaded comments), posting comments/replies, and forwarding any comment directly to friends.
+- **Native Direct Messages & Friends' Stories (`D`)**
+  - Separate iMessage-style DM window supporting both personal and TikTok Business Suite accounts, with a **Web ↔ iOS** switcher in the header.
+  - **Friends' Stories** strip in the Messages header powered by TikTok's Stories API (only friends with active stories) — opens stories on a clean closeable player tab without cluttering the main feed.
+  - Click any shared TikTok video card or forwarded comment in chat to watch it full-bleed inside the floating player on a dedicated **Chat** tab while preserving your exact scroll position on **For You**.
+  - Send videos or forwarded comments via a native bottom **Send** sheet with recent contacts pinned at the top, multi-select, optional note, and link copying.
+- **One-Click QR Code Login**
+  - Sign in quickly via QR code on first launch or anytime from `···` → **QR Login**. Your session is stored locally in `%APPDATA%\TikTokFloat`.
+
+---
+
+## Controls & Gestures
+
+### Video Surface Gestures
+
+| Gesture | Action |
 |---|---|
-| **Одиночный клик** | Пауза / воспроизведение |
-| **Двойной клик** | Поставить или снять лайк (также работает в 1 клик по кнопке лайка в нижней панели) |
-| **Удержание (~0.5 с)** | Сделать или убрать репост с круговым индикатором прогресса (также в 1 клик по кнопке «Репост» снизу) |
-| **Колесо мыши** | Следующий / предыдущий ролик |
-| **`Ctrl` + колесо мыши** | Плавное увеличение или уменьшение размера окна |
-| **Нижняя полоса прогресса** | Перемотка ролика кликом или перетаскиванием |
+| **Single click** | Play / Pause |
+| **Double click** | Like / Unlike (also 1-click on the bottom Like button) |
+| **Click & hold (~0.5 s)** | Repost / Remove Repost with circular progress ring (also 1-click on the bottom Repost button) |
+| **Mouse wheel** | Next / Previous video |
+| **Mouse wheel over speaker icon** | Adjust volume smoothly (`±5%`) |
+| **`Ctrl` + Mouse wheel** | Smoothly scale window size up / down |
+| **Bottom progress bar** | Click or drag to scrub playback position |
 
-### Плавающее окно
+### Keyboard Shortcuts
 
-- **Перетаскивание**: за верхнюю iOS-капсулу по центру.
-- **Изменение размера**: потяни любой край или угол окна (углы сохраняют пропорцию; с зажатым `Shift` — свободный размер), прокрути `Ctrl + колесо`, либо выбери пресет (**Мини / Компакт / Стандарт / Большой**) кнопкой масштаба или в меню `···`.
-- **Чистый вид в покое**: когда курсор вне окна, верхние кнопки и нижняя панель скрываются автоматически.
-- **Закрепление, прозрачность, масштаб и автопросмотр**: доступны в верхней панели при наведении и в выпадающем iOS-меню `···`.
+**Global (work from any app):**
 
-### Автопросмотр и защита от стримов (LIVE)
-
-- По умолчанию включён режим **«До конца видео»**: приложение досматривает ролик целиком и автоматически переключает на следующий.
-- В меню `···` можно переключиться на режим **«По таймеру»** (5–60 с). Для фото-постов без видео автоматически используется пауза по таймеру.
-- **Защита от бага со стримами**: блокируются случайные/автоматические переходы и SPA-редиректы на страницы `/live` и `/@.../live` (`will-navigate`, `will-redirect`, `did-navigate-in-page`, `history.pushState`/`replaceState`, `window.open` и клики по карточкам LIVE), чтобы лента никогда не вылетала на экран стрима.
-- **Переключатель «Скрывать стримы»** (в меню `···`, включён по умолчанию): вырезает прямые эфиры прямо из ответов ленты TikTok (`/api/recommend/item_list`), а если LIVE-карточка всё же попалась из начального кеша — мгновенно заглушает и автоматически пролистывает её в направлении скролла. При желании тумблер можно выключить в любой момент.
-
-### Отдельное окно комментариев
-
-- Нажми кнопку комментариев в нижней панели (либо клавишу `C`).
-- Откроется отдельное окно в стиле iOS-листа рядом с видео, которое автоматически следует за основным окном.
-- Поддерживаются текстовые сообщения, **фото, гифки и стикеры** (с просмотром во всё окно по клику), точные счётчики лайков комментариев, раскрытие ответов, **накопительная автодогрузка при прокрутке (без удаления уже подгруженных комментариев)** и отправка своих комментариев и ответов.
-- **Пересылка комментариев**: у каждого комментария и ответа есть кнопка **«Переслать»** — комментарий с видео отправляется прямо из секции комментариев через тот же скрытый механизм TikTok «Поделиться» (с автоматическим запасным путём через движок ЛС), с выбором нескольких контактов (недавние всегда сверху), подписью, отправкой в открытый чат в 1 клик и копированием.
-- Окно можно открепить, перетащив в сторону, и свободно менять его размер, а кнопкой в шапке снова прикрепить к видео.
-
-### Истории друзей, отправка роликов и Личные сообщения (ЛС)
-
-- **Чистый экран видео**: правый столбик кнопок убран — реакции (лайк, комментарии, отправка в ЛС, репост / удаление репоста) и **плавающий вертикальный iOS-регулятор громкости** (с поддержкой колеса мыши над иконкой звука) находятся в нижней выплывающей панели и работают в один клик (а двойной клик / удержание по самому видео тоже сохранены).
-- **Истории друзей**: в окне сообщений сверху расположена лента кружков **«Истории друзей»** (только для друзей с реальными историями + общая лента историй) и кликабельные бейджи историй в переписках; при открытии истории она появляется на отдельной закрываемой вкладке в плеере, не засоряя основной экран.
-- **Отправка видео контактам**: нажми **«В ЛС»** в нижней панели — снизу поднимется iOS-лист для отправки ролика, где **первыми отображаются недавние контакты** (без всплытия веб-окна TikTok), с поиском, выбором нескольких получателей, подписью и копированием ссылки.
-- **Собственное iOS-окно личных сообщений**: нажми иконку чата в верхней панели (или клавишу `D`) — открывается нативное окно диалогов в стиле iMessage с поддержкой обычных и бизнес-аккаунтов TikTok (включая многофреймовый парсинг `/messages` и дочерних `<iframe>` в `/business-suite/messages`), неразрушающим кэшем чатов, карточками пересланных комментариев и видео, пересылкой комментария из чата и переключателем **«Веб» ↔ «iOS»** в шапке. Клик по присланному в чате ролику или видео из пересланного комментария открывает его в основном плеере на отдельной вкладке **«Чат: Имя»**, сохраняя позицию на вкладке **«Рекомендации»**.
-- **Диагностика ЛС**: при запуске через `start-debug.bat` (или из консоли) выводятся логи `[DM-DEBUG]`, а подробный многофреймовый снимок сохраняется в `%APPDATA%\TikTokFloat\dm-debug.json`.
-
-## Вход в аккаунт по QR-коду
-
-При первом запуске приложение само предлагает **«Войти по QR-коду»** — достаточно нажать кнопку и отсканировать код в приложении TikTok на телефоне.
-
-Также вход по QR-коду в любой момент доступен через меню `···` → **«Войти по QR-коду»** (или прямо из окна комментариев). После успешного входа приложение автоматически возвращается к чистому iOS-интерфейсу. Сессия сохраняется в `%APPDATA%\TikTokFloat`.
-
-## Горячие клавиши
-
-Глобальные (работают поверх всех программ):
-
-| Клавиши | Действие |
+| Shortcut | Action |
 |---|---|
-| `Ctrl + Alt + T` | Закрепить / открепить поверх всех окон |
-| `Ctrl + Alt + H` | Скрыть / показать окно и панель комментариев |
+| `Ctrl + Alt + T` | Toggle Always-on-Top |
+| `Ctrl + Alt + H` | Show / Hide player and docked panels |
 
-Внутри активного окна:
+**Inside the Player Window:**
 
-| Клавиши | Действие |
+| Shortcut | Action |
 |---|---|
-| `Space` / `K` | Пауза / воспроизведение |
-| `↑` / `↓` / `J` | Предыдущий / следующий ролик |
-| `M` | Выключить / включить звук |
-| `C` | Открыть / закрыть окно комментариев |
-| `D` | Открыть / закрыть окно личных сообщений (ЛС) |
-| `2` | Быстро переключить скорость `2×` ↔ `1×` |
-| `<` / `>` | Уменьшить / увеличить скорость (`0.5×` — `2×`) |
-| `Ctrl + +` / `Ctrl + -` | Увеличить / уменьшить размер окна |
-| `Esc` | Закрыть меню настроек или выйти из режима входа |
+| `Space` / `K` | Play / Pause |
+| `↑` / `↓` / `J` | Previous / Next video |
+| `M` | Mute / Unmute |
+| `C` | Toggle Comments window |
+| `D` | Toggle Direct Messages window |
+| `2` | Quick toggle `2×` ↔ `1×` playback speed |
+| `<` / `>` | Decrease / Increase playback speed (`0.5×` – `2×`) |
+| `Ctrl + +` / `Ctrl + -` | Scale window size up / down |
+| `Esc` | Close active sheet or exit login/native TikTok UI mode |
 
-## Состав папки
+---
 
-| Файл | Назначение |
+## Getting Started
+
+### Run Portable Executable (Windows x64)
+- **Single-file portable `.exe`:** run `dist\TikTok Float.exe` (can be moved anywhere, e.g. Desktop).
+- **Instant-start unpacked build:** run `dist\win-unpacked\TikTok Float.exe`.
+
+### Run from Source
+
+```bash
+git clone https://github.com/Kovname/TikTok-Float.git
+cd TikTok-Float
+npm install
+npm start
+```
+
+You can also launch without a console window via `TikTok Float.vbs`, or with live debug logs via `start-debug.bat`.
+
+### Build Portable `.exe`
+
+```bash
+npm run build
+```
+
+Built binaries are output to `dist\TikTok Float.exe` and `dist\win-unpacked\TikTok Float.exe`.
+
+---
+
+## Project Structure
+
+| File | Responsibility |
 |---|---|
-| `TikTok Float.vbs` | Запуск без консоли |
-| `start-debug.bat` | Запуск с консолью и логами |
-| `main.js` | Главный процесс: безрамочное окно PiP, окно комментариев, докинг, ресайз, IPC |
-| `preload.js` | Мост IPC для основного окна |
-| `comments-preload.js` | Мост IPC для окна комментариев |
-| `webview-preload.js` | Пассивный перехват данных ленты и комментариев внутри `<webview>` |
-| `inject.js` | Переоформление веб-страницы TikTok и контроллер жестов/комментариев |
-| `index.html`, `styles.css`, `renderer.js` | Основное плавающее iOS-окно |
-| `comments.html`, `comments.css`, `comments.js` | Отдельное iOS-окно комментариев |
+| `main.js` | Main process: frameless PiP window, docked Comments & Messages windows, LIVE URL navigation guard, state persistence, IPC, hidden DM engine lifecycle |
+| `preload.js` | Secure `contextBridge` IPC API for the main player window |
+| `inject.js` | Main-world TikTok page controller: clean CSS skinning, main-world API hooks (LIVE filtering & video-scoped comments), DOM fiber verification, stealth share/repost & gestures |
+| `webview-preload.js` | Guest `<webview>` preload: early network tap & host message bridge |
+| `index.html`, `styles.css`, `renderer.js` | Floating iOS-style PiP player shell, HUD, settings sheet, volume popover, and share sheet |
+| `comments.html`, `comments.css`, `comments.js`, `comments-preload.js` | Dockable iOS Comments window with media lightbox & comment forwarding |
+| `messages.html`, `messages.css`, `messages.js`, `messages-preload.js` | Dockable iMessage-style Direct Messages window & Friends' Stories strip |
+| `dm-engine.js`, `dm-engine-preload.js` | Background TikTok DM & Stories scraper/sender supporting multi-frame `/messages` and Business Suite |
+| `docs/screenshots/` | Showcase screenshots used in this README |
+
+---
+
+## License
+
+[MIT](package.json)
