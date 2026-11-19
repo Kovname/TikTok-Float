@@ -17,12 +17,14 @@ const EARLY_NET_TAP = `(() => {
     commentsByVideo: new Map(),
     repliesByComment: new Map(),
     contacts: new Map(),
+    stories: new Map(),
     lastAwemeId: null,
     lastDigg: null,
     lastRepost: null,
     listeners: []
   });
   if (!store.contacts) store.contacts = new Map();
+  if (!store.stories) store.stories = new Map();
   if (!('lastDigg' in store)) store.lastDigg = null;
   if (!('lastRepost' in store)) store.lastRepost = null;
 
@@ -139,13 +141,10 @@ const EARLY_NET_TAP = `(() => {
     if (!data || typeof data !== 'object') return;
 
     if (url.includes('/item/digg') || url.includes('/commit/item/digg')) {
+      // ВАЖНО: в TikTok 2026 сервер возвращает data.is_digg === 0 даже при успешной постановке лайка!
+      // Поэтому направление лайка берём ТОЛЬКО из query-параметра type=1/0, иначе доверяем DOM aria-pressed.
       const isDiggMatch = url.match(/[?&]type=(\d+)/);
-      const inferredDigg =
-        typeof data.is_digg === 'number'
-          ? data.is_digg
-          : isDiggMatch
-            ? Number(isDiggMatch[1])
-            : undefined;
+      const inferredDigg = isDiggMatch ? Number(isDiggMatch[1]) : undefined;
       const awemeMatch = url.match(/[?&]aweme_id=([^&]+)/);
       const awemeId = awemeMatch ? decodeURIComponent(awemeMatch[1]) : '';
       store.lastDigg = {
@@ -291,6 +290,81 @@ const EARLY_NET_TAP = `(() => {
       return;
     }
 
+    if (url.includes('/api/story/user_list') || url.includes('/api/story/batch/item_list')) {
+      let updated = false;
+      const upsertStoryUser = (u, extra) => {
+        if (!u || typeof u !== 'object') return;
+        const uid = String(u.id || u.uid || (extra && extra.authorId) || '').trim();
+        const handle = String(u.uniqueId || u.unique_id || '').replace(/^@/, '').trim();
+        const name = String(u.nickname || handle || '').trim();
+        if (!name && !handle) return;
+        const key = uid || handle.toLowerCase() || name.toLowerCase();
+        const prev = store.stories.get(key) || {};
+        const nextHandle = handle || prev.handle || '';
+        const itemId = (extra && extra.firstItemId) || prev.firstItemId || '';
+        const isPhoto = Boolean((extra && extra.isPhoto) || prev.isPhoto);
+        const directUrl =
+          itemId && nextHandle
+            ? 'https://www.tiktok.com/@' + nextHandle + '/' + (isPhoto ? 'photo' : 'video') + '/' + itemId
+            : itemId
+              ? 'https://www.tiktok.com/@_/' + (isPhoto ? 'photo' : 'video') + '/' + itemId
+              : nextHandle
+                ? 'https://www.tiktok.com/@' + nextHandle
+                : prev.url || '';
+        store.stories.set(key, {
+          id: key,
+          authorId: uid || prev.authorId || '',
+          name: name || prev.name || nextHandle,
+          handle: nextHandle,
+          avatar: pickAvatar(u) || prev.avatar || '',
+          url: directUrl,
+          firstItemId: itemId,
+          isPhoto,
+          storyCount: Number((extra && extra.storyCount) || prev.storyCount || 1),
+          allViewed: typeof (extra && extra.allViewed) === 'boolean'
+            ? extra.allViewed
+            : typeof prev.allViewed === 'boolean'
+              ? prev.allViewed
+              : u.UserStoryStatus === 2,
+          hasStory: true,
+          hasActiveRing: true,
+          order: prev.order ?? store.stories.size
+        });
+        updated = true;
+      };
+
+      if (Array.isArray(data.storyUsers)) {
+        for (const entry of data.storyUsers) {
+          const u = entry && entry.user ? entry.user : entry;
+          upsertStoryUser(u, null);
+        }
+      }
+      if (Array.isArray(data.batchStoryItemLists)) {
+        for (const batch of data.batchStoryItemLists) {
+          if (!batch || !Array.isArray(batch.itemList) || !batch.itemList.length) continue;
+          const firstItem = batch.itemList[0];
+          const author = firstItem && firstItem.author ? firstItem.author : null;
+          const firstItemId = String((firstItem && (firstItem.id || firstItem.aweme_id)) || '');
+          const isPhoto = Boolean(firstItem && (firstItem.imagePost || Number(firstItem.aweme_type) === 150));
+          upsertStoryUser(author || { id: batch.AuthorId }, {
+            authorId: String(batch.AuthorId || ''),
+            firstItemId,
+            isPhoto,
+            storyCount: Number(batch.TotalCount || batch.itemList.length || 1),
+            allViewed: Boolean(batch.AllViewed)
+          });
+        }
+      }
+      if (updated) {
+        const list = Array.from(store.stories.values()).sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+        emit('stories', list);
+        try {
+          window.postMessage({ __ttfBridge: true, payload: { type: 'stories', data: list } }, '*');
+        } catch {}
+      }
+      return;
+    }
+
     if (
       url.includes('/api/im/') ||
       url.includes('/api/user/list') ||
@@ -333,6 +407,8 @@ const EARLY_NET_TAP = `(() => {
       url.includes('/item/digg') ||
       url.includes('upvote') ||
       url.includes('repost') ||
+      url.includes('/api/story/user_list') ||
+      url.includes('/api/story/batch/item_list') ||
       url.includes('/api/im/') ||
       url.includes('/api/user/list') ||
       url.includes('/api/share/') ||
@@ -342,50 +418,67 @@ const EARLY_NET_TAP = `(() => {
     );
   }
 
-  const origFetch = window.fetch;
-  if (typeof origFetch === 'function') {
-    window.fetch = function (...args) {
-      const promise = origFetch.apply(this, args);
-      try {
-        const req = args[0];
-        const url = typeof req === 'string' ? req : (req && req.url) || '';
+  function attachNetHooks() {
+    const curFetch = window.fetch;
+    if (typeof curFetch === 'function' && !curFetch.__ttfWrapped) {
+      const wrappedFetch = function (...args) {
+        const promise = curFetch.apply(this, args);
+        try {
+          const req = args[0];
+          const url = typeof req === 'string' ? req : (req && req.url) || '';
+          if (watchUrl(url)) {
+            promise
+              .then((res) => {
+                if (!res || !res.ok) return;
+                return res.clone().json().then((json) => handleJson(url, json));
+              })
+              .catch(() => {});
+          }
+        } catch {}
+        return promise;
+      };
+      wrappedFetch.__ttfWrapped = true;
+      try { window.fetch = wrappedFetch; } catch {}
+    }
+
+    const OrigXHR = window.XMLHttpRequest;
+    if (OrigXHR && OrigXHR.prototype && !OrigXHR.prototype.open.__ttfWrapped) {
+      const origOpen = OrigXHR.prototype.open;
+      const origSend = OrigXHR.prototype.send;
+
+      const wrappedOpen = function (method, url) {
+        this.__ttfUrl = typeof url === 'string' ? url : '';
+        return origOpen.apply(this, arguments);
+      };
+      wrappedOpen.__ttfWrapped = true;
+
+      const wrappedSend = function () {
+        const url = this.__ttfUrl || '';
         if (watchUrl(url)) {
-          promise
-            .then((res) => {
-              if (!res || !res.ok) return;
-              return res.clone().json().then((json) => handleJson(url, json));
-            })
-            .catch(() => {});
+          this.addEventListener('load', function () {
+            try {
+              if (this.status >= 200 && this.status < 300 && this.responseText) {
+                handleJson(url, JSON.parse(this.responseText));
+              }
+            } catch {}
+          });
         }
+        return origSend.apply(this, arguments);
+      };
+      wrappedSend.__ttfWrapped = true;
+
+      try {
+        OrigXHR.prototype.open = wrappedOpen;
+        OrigXHR.prototype.send = wrappedSend;
       } catch {}
-      return promise;
-    };
+    }
   }
 
-  const OrigXHR = window.XMLHttpRequest;
-  if (OrigXHR && OrigXHR.prototype) {
-    const origOpen = OrigXHR.prototype.open;
-    const origSend = OrigXHR.prototype.send;
-
-    OrigXHR.prototype.open = function (method, url) {
-      this.__ttfUrl = typeof url === 'string' ? url : '';
-      return origOpen.apply(this, arguments);
-    };
-
-    OrigXHR.prototype.send = function () {
-      const url = this.__ttfUrl || '';
-      if (watchUrl(url)) {
-        this.addEventListener('load', function () {
-          try {
-            if (this.status >= 200 && this.status < 300 && this.responseText) {
-              handleJson(url, JSON.parse(this.responseText));
-            }
-          } catch {}
-        });
-      }
-      return origSend.apply(this, arguments);
-    };
-  }
+  attachNetHooks();
+  document.addEventListener('DOMContentLoaded', attachNetHooks);
+  window.addEventListener('load', attachNetHooks);
+  setTimeout(attachNetHooks, 900);
+  setTimeout(attachNetHooks, 2400);
 })();`;
 
 try {
@@ -399,4 +492,9 @@ window.addEventListener('message', (event) => {
   try {
     ipcRenderer.sendToHost('ttf:event', data.payload);
   } catch {}
+  if (data.payload && data.payload.type === 'stories') {
+    try {
+      ipcRenderer.send('stories:update-from-api', data.payload.data);
+    } catch {}
+  }
 });

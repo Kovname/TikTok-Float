@@ -112,6 +112,10 @@ let dmEngineReady = false;
 let latestDmSnapshot = null;
 let dmPendingVideoUrl = '';
 let dmResolvingVideo = false;
+let apiFriendsStories = [];
+let storiesFetchInFlight = false;
+let lastStoriesFetchAt = 0;
+let storiesFetchDoneResolver = null;
 let fallbackGuestWebContents = null;
 let state = { ...DEFAULT_STATE };
 let saveTimer = null;
@@ -845,6 +849,10 @@ async function openDmChatTrusted(chatId, index, name) {
       if (realMsgs.length > 0 && (headerMatches || changed)) {
         handleDmSnapshot(lastSnap);
         writeDmDebug('open-ok:' + (name || chatId || '') + ':msgs=' + realMsgs.length);
+        // Подгружаем ленивые обложки видео в фоне сразу после открытия диалога
+        setTimeout(() => {
+          dmEval('window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.hydrateVisibleCovers ? window.__TTF_DM_ENGINE__.hydrateVisibleCovers() : false').catch(() => {});
+        }, 180);
         return { ok: true, count: realMsgs.length };
       }
     }
@@ -1073,6 +1081,96 @@ function formatForwardedCommentMessage(comment, videoUrl, note) {
   return lines.join('\n');
 }
 
+/**
+ * Отправка сообщения (или ответа на конкретное сообщение) в открытый чат TikTok
+ * через нативный Chromium focus + click + webContents.insertText (100% совместимо с Draft.js).
+ */
+async function sendTrustedDmText(rawText, replyToDomIndex) {
+  const text = String(rawText || '').trim();
+  if (!text) return { ok: false, reason: 'empty' };
+  ensureDmEngine();
+  if (!dmEngineWin || dmEngineWin.isDestroyed()) return { ok: false, reason: 'no_engine' };
+
+  const wc = dmEngineWin.webContents;
+
+  // 1) Если это ответ (Reply) на конкретное сообщение — наводим и кликаем [data-e2e="dm-new-reply-btn"]
+  if (Number.isInteger(replyToDomIndex) && replyToDomIndex >= 0) {
+    const rLoc = await dmEval(
+      'window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.locateReplyButton ? window.__TTF_DM_ENGINE__.locateReplyButton(' +
+        replyToDomIndex + ') : null'
+    );
+    if (rLoc && rLoc.ok) {
+      wc.focus();
+      wc.sendInputEvent({ type: 'mouseMove', x: rLoc.msgX, y: rLoc.msgY });
+      await new Promise((r) => setTimeout(r, 110));
+      wc.sendInputEvent({ type: 'mouseMove', x: rLoc.replyX, y: rLoc.replyY });
+      wc.sendInputEvent({ type: 'mouseDown', x: rLoc.replyX, y: rLoc.replyY, button: 'left', clickCount: 1 });
+      await new Promise((r) => setTimeout(r, 40));
+      wc.sendInputEvent({ type: 'mouseUp', x: rLoc.replyX, y: rLoc.replyY, button: 'left', clickCount: 1 });
+      await new Promise((r) => setTimeout(r, 180));
+    } else {
+      await dmEval(
+        'window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.clickReplyFallback ? window.__TTF_DM_ENGINE__.clickReplyFallback(' +
+          replyToDomIndex + ') : false'
+      );
+      await new Promise((r) => setTimeout(r, 180));
+    }
+  }
+
+  // 2) Кликаем по полю ввода Draft.js и вставляем текст нативным insertText
+  const edLoc = await dmEval(
+    'window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.locateMessageEditor ? window.__TTF_DM_ENGINE__.locateMessageEditor() : null'
+  );
+  if (edLoc && edLoc.ok) {
+    wc.focus();
+    wc.sendInputEvent({ type: 'mouseMove', x: edLoc.x, y: edLoc.y });
+    wc.sendInputEvent({ type: 'mouseDown', x: edLoc.x, y: edLoc.y, button: 'left', clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 40));
+    wc.sendInputEvent({ type: 'mouseUp', x: edLoc.x, y: edLoc.y, button: 'left', clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 110));
+    try {
+      await wc.insertText(text);
+    } catch {
+      await dmEval(
+        'window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.prepareSendMessage(' +
+          JSON.stringify(text) + ') : null'
+      );
+    }
+  } else {
+    const prep = await dmEval(
+      'window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.prepareSendMessage(' +
+        JSON.stringify(text) + ') : null'
+    );
+    if (!prep || !prep.ok) return { ok: false, reason: 'editor_not_found' };
+  }
+
+  await new Promise((r) => setTimeout(r, 220));
+  if (!dmEngineWin || dmEngineWin.isDestroyed()) return { ok: false };
+
+  // 3) Отправляем: сначала жмём Enter (нативный хоткей Draft.js в TikTok), если кнопка отправки осталась — кликаем по [data-e2e="dm-new-send-btn"]
+  wc.focus();
+  wc.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
+  await new Promise((r) => setTimeout(r, 35));
+  wc.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
+  await new Promise((r) => setTimeout(r, 200));
+
+  const sendBtnStill = await dmEval(
+    'window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.locateSendButton ? window.__TTF_DM_ENGINE__.locateSendButton() : null'
+  );
+  if (sendBtnStill && sendBtnStill.ok) {
+    wc.sendInputEvent({ type: 'mouseMove', x: sendBtnStill.x, y: sendBtnStill.y });
+    wc.sendInputEvent({ type: 'mouseDown', x: sendBtnStill.x, y: sendBtnStill.y, button: 'left', clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 40));
+    wc.sendInputEvent({ type: 'mouseUp', x: sendBtnStill.x, y: sendBtnStill.y, button: 'left', clickCount: 1 });
+    await new Promise((r) => setTimeout(r, 180));
+  }
+
+  await new Promise((r) => setTimeout(r, 420));
+  await dmEval('window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.emitSnapshot(true) : null');
+  logDmDebug('dm-sent', 'len=' + text.length + (Number.isInteger(replyToDomIndex) ? ' reply=' + replyToDomIndex : ''));
+  return { ok: true };
+}
+
 async function sendTextToDmContacts(contacts, messageText) {
   if (!Array.isArray(contacts) || !contacts.length || !messageText) {
     return { ok: false, sentCount: 0 };
@@ -1083,28 +1181,10 @@ async function sendTextToDmContacts(contacts, messageText) {
     const opened = await openDmChatTrusted(c.id || '', null, c.name || c.handle || '');
     if (!opened || !opened.ok) continue;
     await new Promise((r) => setTimeout(r, 240));
-    const prep = await dmEval(
-      'window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.prepareSendMessage(' +
-        JSON.stringify(messageText) + ') : null'
-    );
-    if (prep && prep.ok && dmEngineWin && !dmEngineWin.isDestroyed()) {
-      dmEngineWin.webContents.focus();
-      if (prep.hasSendBtn) {
-        const x = Math.round(prep.sendX);
-        const y = Math.round(prep.sendY);
-        dmEngineWin.webContents.sendInputEvent({ type: 'mouseMove', x, y });
-        dmEngineWin.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-        await new Promise((r) => setTimeout(r, 38));
-        dmEngineWin.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
-      } else {
-        dmEngineWin.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
-        await new Promise((r) => setTimeout(r, 30));
-        dmEngineWin.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
-      }
-      await new Promise((r) => setTimeout(r, 140));
-      await dmEval('window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.clickSendButtonFallback() : false');
+    const res = await sendTrustedDmText(messageText, null);
+    if (res && res.ok) {
       sent++;
-      await new Promise((r) => setTimeout(r, 320));
+      await new Promise((r) => setTimeout(r, 280));
     }
   }
   if (sent > 0) {
@@ -1112,6 +1192,262 @@ async function sendTextToDmContacts(contacts, messageText) {
     await dmEval('window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.emitSnapshot(true) : null');
   }
   return { ok: sent > 0, sentCount: sent };
+}
+
+const STORIES_MAIN_WORLD_TAP = `(() => {
+  if (window.__TTF_STORIES_TAP__) return true;
+  window.__TTF_STORIES_TAP__ = true;
+  const map = (window.__TTF_STORIES_MAP__ = window.__TTF_STORIES_MAP__ || new Map());
+  window.__TTF_STORIES_HAS_BATCH__ = false;
+
+  const firstUrl = (obj) => {
+    if (!obj) return '';
+    if (typeof obj === 'string') return obj;
+    if (Array.isArray(obj.url_list) && obj.url_list.length) return obj.url_list[0];
+    if (Array.isArray(obj.urlList) && obj.urlList.length) return obj.urlList[0];
+    return '';
+  };
+  const pickAvatar = (u) => {
+    if (!u) return '';
+    return firstUrl(u.avatarThumb) || firstUrl(u.avatar_thumb) || firstUrl(u.avatarMedium) || firstUrl(u.avatarLarger) || firstUrl(u.avatar) || '';
+  };
+
+  const upsert = (u, extra) => {
+    if (!u || typeof u !== 'object') return;
+    if (u.UserStoryStatus === 0 && !(extra && extra.firstItemId)) return;
+    const uid = String(u.id || u.uid || (extra && extra.authorId) || '').trim();
+    const handle = String(u.uniqueId || u.unique_id || '').replace(/^@/, '').trim();
+    const name = String(u.nickname || handle || '').trim();
+    if (!name && !handle) return;
+    const key = uid || handle.toLowerCase() || name.toLowerCase();
+    const prev = map.get(key) || {};
+    const nextHandle = handle || prev.handle || '';
+    const itemId = (extra && extra.firstItemId) || prev.firstItemId || '';
+    const isPhoto = Boolean((extra && extra.isPhoto) || prev.isPhoto);
+    const directUrl =
+      itemId && nextHandle
+        ? 'https://www.tiktok.com/@' + nextHandle + '/' + (isPhoto ? 'photo' : 'video') + '/' + itemId
+        : itemId
+          ? 'https://www.tiktok.com/@_/' + (isPhoto ? 'photo' : 'video') + '/' + itemId
+          : nextHandle
+            ? 'https://www.tiktok.com/@' + nextHandle
+            : prev.url || '';
+    map.set(key, {
+      id: key,
+      authorId: uid || prev.authorId || '',
+      name: name || prev.name || nextHandle,
+      handle: nextHandle,
+      avatar: pickAvatar(u) || prev.avatar || '',
+      url: directUrl,
+      firstItemId: itemId,
+      isPhoto,
+      storyCount: Number((extra && extra.storyCount) || prev.storyCount || 1),
+      allViewed: typeof (extra && extra.allViewed) === 'boolean'
+        ? extra.allViewed
+        : typeof prev.allViewed === 'boolean'
+          ? prev.allViewed
+          : u.UserStoryStatus === 2,
+      hasStory: true,
+      hasActiveRing: true,
+      order: prev.order ?? map.size
+    });
+  };
+
+  const handle = (url, data) => {
+    if (!data || typeof data !== 'object') return;
+    if (Array.isArray(data.storyUsers)) {
+      for (const entry of data.storyUsers) upsert(entry && entry.user ? entry.user : entry, null);
+    }
+    if (Array.isArray(data.batchStoryItemLists)) {
+      for (const batch of data.batchStoryItemLists) {
+        if (!batch || !Array.isArray(batch.itemList) || !batch.itemList.length) continue;
+        const firstItem = batch.itemList[0];
+        const author = firstItem && firstItem.author ? firstItem.author : null;
+        const firstItemId = String((firstItem && (firstItem.id || firstItem.aweme_id)) || '');
+        const isPhoto = Boolean(firstItem && (firstItem.imagePost || Number(firstItem.aweme_type) === 150));
+        upsert(author || { id: batch.AuthorId }, {
+          authorId: String(batch.AuthorId || ''),
+          firstItemId,
+          isPhoto,
+          storyCount: Number(batch.TotalCount || batch.itemList.length || 1),
+          allViewed: Boolean(batch.AllViewed)
+        });
+        window.__TTF_STORIES_HAS_BATCH__ = true;
+      }
+    }
+  };
+
+  const hook = () => {
+    const cf = window.fetch;
+    if (typeof cf === 'function' && !cf.__ttfSt) {
+      const wf = function(...args) {
+        const p = cf.apply(this, args);
+        try {
+          const u = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+          if (u.includes('/api/story/')) {
+            p.then((r) => r && r.ok && r.clone().json().then((j) => handle(u, j))).catch(() => {});
+          }
+        } catch {}
+        return p;
+      };
+      wf.__ttfSt = true;
+      try { window.fetch = wf; } catch {}
+    }
+    const X = window.XMLHttpRequest;
+    if (X && X.prototype && !X.prototype.open.__ttfSt) {
+      const oo = X.prototype.open;
+      const os = X.prototype.send;
+      const wo = function(m, u) { this.__stU = String(u || ''); return oo.apply(this, arguments); };
+      wo.__ttfSt = true;
+      const ws = function() {
+        const u = this.__stU || '';
+        if (u.includes('/api/story/')) {
+          this.addEventListener('load', () => {
+            try { if (this.status >= 200 && this.status < 300) handle(u, JSON.parse(this.responseText)); } catch {}
+          });
+        }
+        return os.apply(this, arguments);
+      };
+      ws.__ttfSt = true;
+      try { X.prototype.open = wo; X.prototype.send = ws; } catch {}
+    }
+  };
+  hook();
+  return true;
+})();`;
+
+/**
+ * Загружает ПОЛНЫЙ реальный список историй друзей через официальный SPA-переход TikTok «Друзья»
+ * (/api/story/user_list + /api/story/batch/item_list), а затем мгновенно уничтожает фоновое окно.
+ */
+async function refreshFriendsStoriesInBackground(force) {
+  const now = Date.now();
+  if (storiesFetchInFlight) return;
+  if (!force && now - lastStoriesFetchAt < 60000 && apiFriendsStories.length > 0) return;
+
+  storiesFetchInFlight = true;
+  lastStoriesFetchAt = now;
+  let fetcherWin = null;
+  try {
+    logDmDebug('stories-fetch-start', force ? 'forced' : 'auto');
+    fetcherWin = new BrowserWindow({
+      width: 420,
+      height: 700,
+      show: false,
+      paintWhenInitiallyHidden: true,
+      skipTaskbar: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false
+      }
+    });
+    fetcherWin.webContents.setAudioMuted(true);
+    fetcherWin.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    fetcherWin.webContents.on('dom-ready', () => {
+      if (fetcherWin && !fetcherWin.isDestroyed()) {
+        fetcherWin.webContents.executeJavaScript(STORIES_MAIN_WORLD_TAP, true).catch(() => {});
+      }
+    });
+
+    await fetcherWin.loadURL('https://www.tiktok.com/foryou?lang=ru', { userAgent: CHROME_UA }).catch(() => {});
+    for (let i = 0; i < 18 && fetcherWin && !fetcherWin.isDestroyed(); i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      await fetcherWin.webContents.executeJavaScript(STORIES_MAIN_WORLD_TAP, true).catch(() => {});
+      const clicked = await fetcherWin.webContents
+        .executeJavaScript(
+          '(() => { const a = document.querySelector(\'[data-e2e="nav-friends"], a[href*="/friends"]\'); if (a) { a.click(); return true; } return false; })()',
+          true
+        )
+        .catch(() => false);
+      if (clicked) break;
+    }
+
+    // Ждём ответы /api/story/user_list и /api/story/batch/item_list (до 6.5 с)
+    for (let i = 0; i < 22 && fetcherWin && !fetcherWin.isDestroyed(); i++) {
+      await new Promise((r) => setTimeout(r, 300));
+      const snap = await fetcherWin.webContents
+        .executeJavaScript(
+          '(() => ({ hasBatch: Boolean(window.__TTF_STORIES_HAS_BATCH__), list: window.__TTF_STORIES_MAP__ ? Array.from(window.__TTF_STORIES_MAP__.values()).sort((a,b)=>(a.order??999)-(b.order??999)) : [] }))()',
+          true
+        )
+        .catch(() => null);
+      if (snap && Array.isArray(snap.list) && snap.list.length > 0) {
+        apiFriendsStories = snap.list.filter((s) => s && s.name && !isInvalidDmChatName(s.name, ''));
+        if (latestDmSnapshot) {
+          latestDmSnapshot = {
+            ...latestDmSnapshot,
+            stories: mergeAllRealStories(latestDmSnapshot.stories)
+          };
+          if (messagesWin && !messagesWin.isDestroyed()) {
+            messagesWin.webContents.send('messages:snapshot', latestDmSnapshot);
+          }
+        }
+        if (snap.hasBatch && apiFriendsStories.some((s) => s.firstItemId)) {
+          await new Promise((r) => setTimeout(r, 500));
+          // Забираем финальный полный набор после batch
+          const finalSnap = await fetcherWin.webContents
+            .executeJavaScript(
+              'window.__TTF_STORIES_MAP__ ? Array.from(window.__TTF_STORIES_MAP__.values()).sort((a,b)=>(a.order??999)-(b.order??999)) : []',
+              true
+            )
+            .catch(() => null);
+          if (Array.isArray(finalSnap) && finalSnap.length > 0) {
+            apiFriendsStories = finalSnap.filter((s) => s && s.name && !isInvalidDmChatName(s.name, ''));
+            if (latestDmSnapshot) {
+              latestDmSnapshot = {
+                ...latestDmSnapshot,
+                stories: mergeAllRealStories(latestDmSnapshot.stories)
+              };
+              if (messagesWin && !messagesWin.isDestroyed()) {
+                messagesWin.webContents.send('messages:snapshot', latestDmSnapshot);
+              }
+            }
+          }
+          break;
+        }
+      }
+    }
+    logDmDebug('stories-fetch-done', 'count=' + apiFriendsStories.length);
+  } catch (err) {
+    logDmDebug('stories-fetch-err', String(err));
+  } finally {
+    storiesFetchDoneResolver = null;
+    storiesFetchInFlight = false;
+    if (fetcherWin && !fetcherWin.isDestroyed()) {
+      try { fetcherWin.destroy(); } catch {}
+    }
+  }
+}
+
+function mergeAllRealStories(domStories) {
+  const out = [];
+  const seen = new Set();
+  const push = (s) => {
+    if (!s || !s.name || isInvalidDmChatName(s.name, '')) return;
+    const key = String(s.handle || s.authorId || s.name).trim().toLowerCase();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      id: key,
+      name: String(s.name).trim(),
+      handle: String(s.handle || '').replace(/^@/, '').trim(),
+      avatar: String(s.avatar || ''),
+      url: String(s.url || (s.handle ? 'https://www.tiktok.com/@' + s.handle : '')),
+      storyCount: Number(s.storyCount || 1),
+      allViewed: Boolean(s.allViewed),
+      hasStory: true,
+      hasActiveRing: true
+    });
+  };
+  // 1) Приоритет — официальный API /api/story/user_list + /api/story/batch/item_list (все друзья с реальными историями!)
+  for (const s of apiFriendsStories) push(s);
+  // 2) Дополняем реальными историями из DOM /messages
+  if (Array.isArray(domStories)) {
+    for (const s of domStories) push(s);
+  }
+  return out;
 }
 
 const INVALID_DM_NAME_RE =
@@ -1180,18 +1516,15 @@ function handleDmSnapshot(rawSnapshot) {
     snapshot.conversations = [];
   }
 
-  const validStories = Array.isArray(snapshot.stories)
-    ? snapshot.stories.filter((s) => s && s.name && !isInvalidDmChatName(s.name, ''))
-    : [];
+  const validStories = mergeAllRealStories(snapshot.stories);
   if (validStories.length > 0) {
     cachedDmStories.length = 0;
     cachedDmStories.push(...validStories);
     snapshot.stories = validStories;
-  } else if (snapshot.conversations.length > 0) {
-    cachedDmStories.length = 0;
-    snapshot.stories = [];
-  } else if (cachedDmStories.length > 0) {
+  } else if (cachedDmStories.length > 0 && apiFriendsStories.length > 0) {
     snapshot.stories = [...cachedDmStories];
+  } else {
+    snapshot.stories = [];
   }
 
   latestDmSnapshot = snapshot;
@@ -2242,8 +2575,30 @@ function setupIpc() {
     return { docked: state.messagesDocked };
   });
 
+  ipcMain.on('stories:update-from-api', (_event, list) => {
+    if (!Array.isArray(list) || !list.length) return;
+    apiFriendsStories = list.filter((s) => s && s.name && !isInvalidDmChatName(s.name, ''));
+    const hasBatchItems = apiFriendsStories.some((s) => Boolean(s.firstItemId));
+    logDmDebug('stories-api-update', 'count=' + apiFriendsStories.length + ' withItems=' + hasBatchItems);
+    if (hasBatchItems && typeof storiesFetchDoneResolver === 'function') {
+      const done = storiesFetchDoneResolver;
+      storiesFetchDoneResolver = null;
+      done();
+    }
+    if (latestDmSnapshot) {
+      latestDmSnapshot = {
+        ...latestDmSnapshot,
+        stories: mergeAllRealStories(latestDmSnapshot.stories)
+      };
+      if (messagesWin && !messagesWin.isDestroyed()) {
+        messagesWin.webContents.send('messages:snapshot', latestDmSnapshot);
+      }
+    }
+  });
+
   ipcMain.handle('messages:get-initial', () => {
     ensureDmEngine();
+    refreshFriendsStoriesInBackground(false).catch(() => {});
     const convCount =
       latestDmSnapshot && Array.isArray(latestDmSnapshot.conversations)
         ? latestDmSnapshot.conversations.length
@@ -2255,15 +2610,19 @@ function setupIpc() {
     } else {
       writeDmDebug('messages-opened:' + convCount);
     }
+    const snap = latestDmSnapshot
+      ? { ...latestDmSnapshot, stories: mergeAllRealStories(latestDmSnapshot.stories) }
+      : { loggedIn: true, loading: true, conversations: [], stories: mergeAllRealStories([]), messages: [], unreadTotal: 0 };
     return {
       docked: state.messagesDocked,
-      snapshot: latestDmSnapshot
+      snapshot: snap
     };
   });
 
   ipcMain.handle('messages:refresh', async () => {
     allowBusinessSuiteFallback = false;
     clearTimeout(businessSuiteCheckTimer);
+    refreshFriendsStoriesInBackground(true).catch(() => {});
     if (dmEngineWin && !dmEngineWin.isDestroyed()) {
       dmEngineReady = false;
       logDmDebug('manual-refresh', TIKTOK_MESSAGES_URL);
@@ -2282,31 +2641,18 @@ function setupIpc() {
     return openDmChatTrusted(payload.chatId || '', payload.index ?? null, payload.name || '');
   });
 
-  ipcMain.handle('messages:send-message', async (_event, rawText) => {
-    const prep = await dmEval(
-      'window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.prepareSendMessage(' +
-        JSON.stringify(rawText || '') + ') : null'
-    );
-    if (!prep || !prep.ok) return { ok: false };
-    if (dmEngineWin && !dmEngineWin.isDestroyed()) {
-      dmEngineWin.webContents.focus();
-      if (prep.hasSendBtn) {
-        const x = Math.round(prep.sendX);
-        const y = Math.round(prep.sendY);
-        dmEngineWin.webContents.sendInputEvent({ type: 'mouseMove', x, y });
-        dmEngineWin.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-        await new Promise((r) => setTimeout(r, 38));
-        dmEngineWin.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
-      } else {
-        dmEngineWin.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' });
-        await new Promise((r) => setTimeout(r, 30));
-        dmEngineWin.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' });
-      }
-      await new Promise((r) => setTimeout(r, 450));
-      await dmEval('window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.emitSnapshot(true) : null');
-      return { ok: true };
-    }
-    return { ok: false };
+  ipcMain.handle('messages:send-message', async (_event, payload) => {
+    const text =
+      typeof payload === 'string'
+        ? payload
+        : payload && typeof payload === 'object'
+          ? String(payload.text || '')
+          : '';
+    const replyToDomIndex =
+      payload && typeof payload === 'object' && Number.isInteger(payload.replyToDomIndex)
+        ? payload.replyToDomIndex
+        : null;
+    return sendTrustedDmText(text, replyToDomIndex);
   });
 
   ipcMain.handle('messages:load-older', async () => {

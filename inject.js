@@ -10,7 +10,7 @@
  */
 function tiktokFloatPageController() {
   const KEY = '__TIKTOK_FLOAT__';
-  if (window[KEY] && window[KEY].version >= 11) return window[KEY].status();
+  if (window[KEY] && window[KEY].version >= 12) return window[KEY].status();
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -1012,20 +1012,21 @@ function tiktokFloatPageController() {
     let liked = domLiked;
     let changed = domLiked !== Boolean(beforeLiked);
 
-    if (apiDigg && apiDigg.statusCode === 0) {
+    // Приоритет №1 — реальный DOM aria-pressed/icon (в TikTok 2026 сервер часто шлёт is_digg:0 даже при успешном лайке!)
+    if (!changed && apiDigg && apiDigg.statusCode === 0) {
       if (typeof apiDigg.isDigg === 'number') {
         liked = apiDigg.isDigg === 1;
       } else {
         liked = !Boolean(beforeLiked);
       }
       changed = true;
-    } else if (countChanged && !changed) {
+    } else if (!changed && countChanged) {
       liked = !Boolean(beforeLiked);
       changed = true;
     }
 
     if (changed && videoId) {
-      S.likedOverrides.set(videoId, { liked, settledAt: Date.now() + 1500, until: Date.now() + 30000 });
+      S.likedOverrides.set(videoId, { liked, settledAt: Date.now() + 1800, until: Date.now() + 30000 });
       const meta = NET.videos.get(videoId);
       if (meta) meta.liked = liked;
     }
@@ -2454,8 +2455,17 @@ function tiktokFloatPageController() {
     }
   }
 
+  function openFriendsSpa() {
+    const link = document.querySelector('[data-e2e="nav-friends"], a[href*="/friends"]');
+    if (link) {
+      try { link.click(); return true; } catch {}
+    }
+    return false;
+  }
+
   window[KEY] = {
-    version: 11,
+    version: 12,
+    openFriendsSpa,
     configure,
     status,
     togglePlay,
@@ -2539,6 +2549,11 @@ window.TTF_INJECT = {
     #app,
     [class*="DivBodyContainer"],
     [class*="DivMainContainer"],
+    [class*="DivContentContainer"],
+    [class*="DivLeftContainer"],
+    [class*="DivColumnListContainer"],
+    [class*="ArticleItemContainer"],
+    [class*="DivContentFlexLayout"],
     [data-e2e="anchoring-player-column"],
     #column-list-container,
     [data-e2e="recommend-list-item-container"],
@@ -2548,8 +2563,11 @@ window.TTF_INJECT = {
     [class*="DivMediaCardWrapper"],
     [class*="DivVideoWrapper"],
     [class*="DivPlayerContainer"],
+    [class*="BasePlayerContainer"],
     [class*="DivVideoPlayerContainer"],
     [class*="DivBasicPlayerWrapper"] {
+      left: 0 !important;
+      right: 0 !important;
       width: 100% !important;
       max-width: 100% !important;
       min-width: 0 !important;
@@ -2557,6 +2575,67 @@ window.TTF_INJECT = {
       padding: 0 !important;
       border-radius: 0 !important;
       background: #0c0c0e !important;
+      box-sizing: border-box !important;
+    }
+
+    [class*="DivContentFlexLayout"] {
+      gap: 0 !important;
+      transform: none !important;
+    }
+
+    [class*="DivVideoPlayerContainer"] > [class*="DivContainer"],
+    [class*="BasePlayerContainer"] > [class*="DivContainer"],
+    [class*="DivBasicPlayerWrapper"] > div,
+    [data-e2e="recommend-list-item-container"] [class*="DivContainer"],
+    [data-e2e="recommend-list-item-container"] [class*="DivMediaCard"],
+    [data-e2e="recommend-list-item-container"] [class*="DivPlayer"],
+    [data-e2e="recommend-list-item-container"] [class*="xgplayer"] {
+      left: 0 !important;
+      right: 0 !important;
+      width: 100% !important;
+      max-width: 100% !important;
+      min-width: 0 !important;
+      margin-left: 0 !important;
+      margin-right: 0 !important;
+      padding-left: 0 !important;
+      padding-right: 0 !important;
+    }
+
+    [data-e2e="recommend-list-item-container"] > [class*="DivContentFlexLayout"],
+    [data-e2e="recommend-list-item-container"] [data-e2e="feed-video"],
+    [data-e2e="recommend-list-item-container"] [class*="SectionMediaCardContainer"],
+    [data-e2e="recommend-list-item-container"] [class*="DivVideoPlayerContainer"],
+    [data-e2e="recommend-list-item-container"] [class*="BasePlayerContainer"],
+    [data-e2e="recommend-list-item-container"] [class*="DivContainer"],
+    [data-e2e="recommend-list-item-container"] [class*="DivBasicPlayerWrapper"],
+    [data-e2e="browse-video"] [class*="DivBasicPlayerWrapper"] {
+      position: absolute !important;
+      inset: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      top: 0 !important;
+      bottom: 0 !important;
+      width: 100% !important;
+      height: 100% !important;
+      max-width: none !important;
+      max-height: none !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      transform: none !important;
+    }
+
+    /* Выносим скрытую правую колонку кнопок TikTok из flex-потока (0px вёрстки для видео с чата!), но сохраняем её размеры внутри вьюпорта для кликов Лайк/Поделиться/Комментарии */
+    [class*="SectionActionBarContainer"],
+    [class*="ActionBarContainer"],
+    [data-e2e="anchoring-engagement-vertical"],
+    [class*="DivVerticalEngagement"] {
+      position: fixed !important;
+      right: 12px !important;
+      bottom: 80px !important;
+      width: auto !important;
+      height: auto !important;
+      margin: 0 !important;
+      flex: 0 0 0 !important;
     }
 
     [data-e2e="recommend-list-item-container"],
@@ -2570,6 +2649,8 @@ window.TTF_INJECT = {
     [data-e2e="recommend-list-item-container"] video,
     [data-e2e="browse-video"] video,
     [class*="DivBasicPlayerWrapper"] video {
+      left: 0 !important;
+      top: 0 !important;
       width: 100% !important;
       height: 100% !important;
       object-fit: cover !important;

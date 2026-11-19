@@ -9,12 +9,40 @@
  * - Извлекает сообщения и присланные видео 3 уровнями: строки сообщений + React Fiber (JSON msg.content с aweme_id) + геометрический TreeWalker-сканер по всей правой области чата.
  */
 function tiktokFloatDmEngine() {
-  if (window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.version >= 8) {
+  if (window.__TTF_DM_ENGINE__ && window.__TTF_DM_ENGINE__.version >= 10) {
     return window.__TTF_DM_ENGINE__.snapshot();
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const cleanText = (el) => (el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '');
+  const videoThumbCache = new Map();
+
+  function extractBgImageUrl(el) {
+    if (!el) return '';
+    const check = (val) => {
+      if (!val || val === 'none') return '';
+      const m = String(val).match(/url\(\s*["']?(https?:\/\/[^"')]+)["']?\s*\)/i);
+      return m && m[1] ? m[1] : '';
+    };
+    const fromStyle = check(el.style && el.style.backgroundImage);
+    if (fromStyle) return fromStyle;
+    try {
+      const fromComp = check(getComputedStyle(el).backgroundImage);
+      if (fromComp) return fromComp;
+    } catch {}
+    // Также проверяем React props.style.backgroundImage на элементе
+    try {
+      for (const k of Object.keys(el)) {
+        if (!k.startsWith('__reactProps') && !k.startsWith('__reactFiber')) continue;
+        const obj = el[k];
+        const props = obj && (obj.memoizedProps || obj);
+        const bg = props && props.style && props.style.backgroundImage;
+        const found = check(bg);
+        if (found) return found;
+      }
+    } catch {}
+    return '';
+  }
   const isIframeContext = (() => {
     try { return window !== window.top; } catch { return true; }
   })();
@@ -152,8 +180,10 @@ function tiktokFloatDmEngine() {
   }
 
   function findChatRowElements() {
-    // 1) Основной точный селектор TikTok /messages — никогда не смешиваем с внутренними wrapper-элементами!
-    const exactPrimary = Array.from(document.querySelectorAll('[data-e2e="chat-list-item"]')).filter((el) => {
+    // 1) Основной точный селектор TikTok /messages (2026: dm-new-conversation-item / chat-list-item)
+    const exactPrimary = Array.from(
+      document.querySelectorAll('[data-e2e="dm-new-conversation-item"], [data-e2e="chat-list-item"]')
+    ).filter((el) => {
       if (isTopGlobalHeader(el)) return false;
       const r = el.getBoundingClientRect();
       return r.left >= -8 && r.left <= 560 && r.width >= 110 && r.width <= 540 && r.height >= 36 && r.height <= 140;
@@ -1071,8 +1101,17 @@ function tiktokFloatDmEngine() {
 
       if (looksLikeVideoCard) {
         const coverImg = nonAvatarImgs[0];
-        const coverSrc = coverImg ? coverImg.currentSrc || coverImg.src : '';
         const cardScope = videoCard || node;
+        let coverSrc =
+          (coverImg ? coverImg.currentSrc || coverImg.src : '') ||
+          extractBgImageUrl(cardScope) ||
+          extractBgImageUrl(node);
+        if (!coverSrc && cardScope) {
+          for (const child of Array.from(cardScope.querySelectorAll('div')).slice(0, 8)) {
+            const bg = extractBgImageUrl(child);
+            if (bg) { coverSrc = bg; break; }
+          }
+        }
         const rawAuthor = cleanText(
           cardScope.querySelector('[class*="PNickname"], [class*="Author"], [class*="Nickname"], a[href*="/@"]')
         );
@@ -1083,12 +1122,20 @@ function tiktokFloatDmEngine() {
           (videoLink && videoLink.href) ||
           (fiberMeta && fiberMeta.url) ||
           '';
+        const cacheKey = (fiberMeta && fiberMeta.videoId) || url || '';
+        const finalThumb =
+          coverSrc ||
+          (fiberMeta && fiberMeta.thumb) ||
+          (cacheKey ? videoThumbCache.get(cacheKey) || '' : '');
+        if (cacheKey && finalThumb) {
+          videoThumbCache.set(cacheKey, finalThumb);
+        }
         const vAuthor = (fiberMeta && fiberMeta.author) || (rawAuthor ? '@' + rawAuthor.replace(/^@/, '') : '') || '';
         const vDesc = (fiberMeta && fiberMeta.desc) || '';
 
         video = {
           url,
-          thumb: coverSrc || (fiberMeta && fiberMeta.thumb) || '',
+          thumb: finalThumb,
           author: vAuthor,
           desc: vDesc,
           domIndex: idx,
@@ -1105,14 +1152,20 @@ function tiktokFloatDmEngine() {
         }
       }
 
+      const senderHdr = cleanText(node.querySelector('[class*="DivChatItemSenderNameContainer"]'));
+      const replyLabel =
+        !isStoryReactionRow && senderHdr && /(?:ответил|replied|reply)/i.test(senderHdr)
+          ? senderHdr
+          : '';
+
       let text = '';
       if (!video) {
-        const textEl = node.querySelector(
-          '[data-e2e="dm-new-message-text"], [data-e2e="chat-text"], [class*="PText"], [class*="TextContainer"], p'
-        );
+        // Берём самый внутренний текстовый узел (PText), чтобы НЕ дублировать «test ok test ok»!
+        const textEl =
+          node.querySelector('[class*="PText"]') ||
+          node.querySelector('[data-e2e="dm-new-message-text"], [data-e2e="chat-text"], [class*="TextContainer"], p');
         text = cleanText(textEl) || rawText;
         if (isStoryReactionRow) {
-          const senderHdr = cleanText(node.querySelector('[class*="DivChatItemSenderNameContainer"]'));
           if (senderHdr && text && !text.toLowerCase().includes('истори') && !text.toLowerCase().includes('story')) {
             text = senderHdr + ' · ' + text;
           } else if (senderHdr && !text) {
@@ -1120,7 +1173,14 @@ function tiktokFloatDmEngine() {
           }
         }
       } else {
-        const pTexts = Array.from(node.querySelectorAll('[data-e2e="dm-new-message-text"], [class*="PText"], [data-e2e="chat-text"]'))
+        const matchedNodes = Array.from(
+          node.querySelectorAll('[class*="PText"], [data-e2e="chat-text"], [data-e2e="dm-new-message-text"]')
+        );
+        // Отфильтровываем обёртки, содержащие другой совпавший узел (исключаем дублирование текста)
+        const leafMsgNodes = matchedNodes.filter(
+          (el) => !matchedNodes.some((other) => other !== el && el.contains(other))
+        );
+        const pTexts = leafMsgNodes
           .map((n) => cleanText(n))
           .filter((t) => t && t !== video.author && t !== video.author.replace(/^@/, '') && t !== video.desc);
         text = pTexts.join(' ') || (rawText.includes('💬') ? rawText : '');
@@ -1169,6 +1229,7 @@ function tiktokFloatDmEngine() {
         domIndex: idx,
         kind: 'msg',
         sender: isMe ? 'me' : 'them',
+        replyLabel,
         text,
         video,
         forwardedComment,
@@ -1620,7 +1681,7 @@ function tiktokFloatDmEngine() {
       h: data.activeHeader ? data.activeHeader.name : '',
       s: (data.stories || []).length,
       c: data.conversations.map((x) => x.id + ':' + x.lastMessage + ':' + x.timeText + ':' + x.unreadCount + ':' + (x.active ? 1 : 0)),
-      m: data.messages.map((x) => x.id + ':' + (x.video ? x.video.url : '') + ':' + (x.text || '').slice(0, 24))
+      m: data.messages.map((x) => x.id + ':' + (x.video ? x.video.url + '|' + (x.video.thumb || '').slice(-24) : '') + ':' + (x.text || '').slice(0, 24))
     });
     if (!force && hash === lastStateHash) return;
     lastStateHash = hash;
@@ -1856,7 +1917,7 @@ function tiktokFloatDmEngine() {
 
       await sleep(140);
       const sendBtn =
-        document.querySelector('[data-e2e="message-send"], [class*="SvgSend"], button[aria-label*="отправ" i], button[aria-label*="send" i]');
+        document.querySelector('[data-e2e="dm-new-send-btn"], [data-e2e="message-send"], [class*="SvgSend"], button[aria-label*="отправ" i], button[aria-label*="send" i]');
       const sr = sendBtn ? sendBtn.getBoundingClientRect() : null;
       return {
         ok: true,
@@ -1869,9 +1930,102 @@ function tiktokFloatDmEngine() {
     }
   }
 
+  function locateMessageEditor() {
+    const editor =
+      document.querySelector(
+        '[data-e2e="dm-new-input-editor"] [contenteditable="true"], [data-e2e="message-input-area"] .public-DraftEditor-content, .public-DraftEditor-content'
+      ) || findMessageEditor();
+    if (!editor) return { ok: false };
+    try { editor.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
+    const r = editor.getBoundingClientRect();
+    if (r.width < 16 || r.height < 8) return { ok: false };
+    return {
+      ok: true,
+      x: Math.round(r.left + Math.min(64, Math.max(16, r.width / 4))),
+      y: Math.round(r.top + r.height / 2)
+    };
+  }
+
+  function locateSendButton() {
+    const btn = document.querySelector(
+      '[data-e2e="dm-new-send-btn"], [data-e2e="message-send"], [class*="SvgSend"], button[aria-label*="отправ" i], button[aria-label*="send" i]'
+    );
+    if (!btn) return { ok: false };
+    const r = btn.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) return { ok: false };
+    return {
+      ok: true,
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2)
+    };
+  }
+
+  async function locateReplyButton(domIndex) {
+    const paneLeft = getChatPaneLeftBoundary();
+    const chatMain = findChatMainArea() || document.body;
+    const headerEl = findRightPaneHeader(chatMain, paneLeft);
+    const items = collectMessageRowNodes(findMessageScrollBox(chatMain), chatMain, headerEl);
+    const node = items[domIndex];
+    if (!node || !node.isConnected) return { ok: false };
+    try { node.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
+    const actionsWrap = node.querySelector('[class*="DivActions"]');
+    if (actionsWrap) {
+      actionsWrap.style.opacity = '1';
+      actionsWrap.style.visibility = 'visible';
+      actionsWrap.style.pointerEvents = 'auto';
+    }
+    await sleep(60);
+    const nr = node.getBoundingClientRect();
+    const replyBtn = node.querySelector('[data-e2e="dm-new-reply-btn"], [data-e2e*="reply" i]');
+    const rr = replyBtn ? replyBtn.getBoundingClientRect() : null;
+    return {
+      ok: Boolean(replyBtn && rr && rr.width > 2 && rr.height > 2),
+      msgX: Math.round(Math.max(paneLeft + 24, Math.min(window.innerWidth - 24, nr.left + nr.width * 0.65))),
+      msgY: Math.round(Math.max(20, Math.min(window.innerHeight - 20, nr.top + Math.min(28, nr.height / 2)))),
+      replyX: rr ? Math.round(rr.left + rr.width / 2) : 0,
+      replyY: rr ? Math.round(rr.top + rr.height / 2) : 0
+    };
+  }
+
+  function clickReplyFallback(domIndex) {
+    const paneLeft = getChatPaneLeftBoundary();
+    const chatMain = findChatMainArea() || document.body;
+    const headerEl = findRightPaneHeader(chatMain, paneLeft);
+    const items = collectMessageRowNodes(findMessageScrollBox(chatMain), chatMain, headerEl);
+    const node = items[domIndex];
+    const btn = node && node.querySelector('[data-e2e="dm-new-reply-btn"], [data-e2e*="reply" i]');
+    if (!btn) return false;
+    try {
+      triggerReactClick(btn);
+      btn.click();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function hydrateVisibleCovers() {
+    const chatMain = findChatMainArea();
+    const scrollBox = findMessageScrollBox(chatMain);
+    if (!scrollBox) return false;
+    const maxTop = Math.max(0, scrollBox.scrollHeight - scrollBox.clientHeight);
+    if (maxTop > 40) {
+      // Короткий проход по последним 2 экранам активирует IntersectionObserver TikTok для ленивых обложек видео
+      const steps = [Math.max(0, maxTop - scrollBox.clientHeight), Math.max(0, maxTop - Math.round(scrollBox.clientHeight * 0.45)), maxTop];
+      for (const top of steps) {
+        scrollBox.scrollTop = top;
+        scrollBox.dispatchEvent(new Event('scroll', { bubbles: true }));
+        await sleep(160);
+        scrapeActiveChat([]);
+      }
+      emitSnapshot(true);
+    }
+    return true;
+  }
+
   function clickSendButtonFallback() {
     const btn = document.querySelector(
-      '[data-e2e="message-send"], [class*="SvgSend"], button[aria-label*="отправ" i], button[aria-label*="send" i]'
+      '[data-e2e="dm-new-send-btn"], [data-e2e="message-send"], [class*="SvgSend"], button[aria-label*="отправ" i], button[aria-label*="send" i]'
     );
     if (btn) {
       try { btn.click(); return true; } catch {}
@@ -1960,13 +2114,18 @@ function tiktokFloatDmEngine() {
   }, 650);
 
   window.__TTF_DM_ENGINE__ = {
-    version: 9,
+    version: 10,
     hasChatRows: () => findChatRowElements().length > 0,
     snapshot,
     emitSnapshot,
     locateChatRow,
     markChatOpened,
     locateMessageCard,
+    locateMessageEditor,
+    locateSendButton,
+    locateReplyButton,
+    clickReplyFallback,
+    hydrateVisibleCovers,
     clickChatRowFallback,
     getChatListWheelTarget,
     scrollChatListStep,

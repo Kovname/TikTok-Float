@@ -29,6 +29,9 @@ const els = {
   threadSkeleton: $('threadSkeleton'),
   threadEmpty: $('threadEmpty'),
   messagesList: $('messagesList'),
+  replyBar: $('replyBar'),
+  replyBarText: $('replyBarText'),
+  replyCancelBtn: $('replyCancelBtn'),
   composerForm: $('composerForm'),
   msgInput: $('msgInput'),
   sendBtn: $('sendBtn'),
@@ -61,6 +64,7 @@ let snapshot = {
   unreadTotal: 0
 };
 let selectedChat = null;
+let replyTarget = null;
 let inThreadView = false;
 let threadLoading = false;
 let isSending = false;
@@ -284,6 +288,8 @@ function bindHeaderControls() {
     if (e.key === 'Escape') {
       if (!els.mediaLightbox.classList.contains('hidden')) {
         closeLightbox();
+      } else if (replyTarget) {
+        clearReplyTarget();
       } else if (inThreadView && window.innerWidth < 580) {
         inThreadView = false;
         syncViewMode();
@@ -331,7 +337,34 @@ function bindResizeHandles() {
   }
 }
 
+function setReplyTarget(m) {
+  if (!m || !Number.isInteger(m.domIndex)) return;
+  const preview =
+    (m.text && m.text.trim()) ||
+    (m.forwardedComment && '💬 ' + m.forwardedComment.text) ||
+    (m.video && ('Видео ' + (m.video.author || 'TikTok'))) ||
+    (m.isStory && 'История друга') ||
+    'Сообщение';
+  replyTarget = {
+    domIndex: m.domIndex,
+    preview: preview.slice(0, 68)
+  };
+  if (els.replyBar && els.replyBarText) {
+    els.replyBarText.textContent = 'Ответ: «' + replyTarget.preview + '»';
+    els.replyBar.classList.remove('hidden');
+  }
+  els.msgInput.focus();
+}
+
+function clearReplyTarget() {
+  replyTarget = null;
+  if (els.replyBar) els.replyBar.classList.add('hidden');
+}
+
 function bindComposer() {
+  if (els.replyCancelBtn) {
+    els.replyCancelBtn.addEventListener('click', clearReplyTarget);
+  }
   const syncInput = () => {
     els.msgInput.style.height = '32px';
     els.msgInput.style.height = Math.max(32, Math.min(92, els.msgInput.scrollHeight)) + 'px';
@@ -448,12 +481,14 @@ function renderStoriesBar() {
       handle: String(item.handle || '').replace(/^@/, '').trim(),
       avatar: String(item.avatar || ''),
       url: String(item.url || ''),
+      storyCount: Number(item.storyCount || 1),
+      allViewed: Boolean(item.allViewed),
       hasStory: true
     });
   }
 
   const sig = merged
-    .map((s) => s.id + '|' + s.name + '|' + s.avatar)
+    .map((s) => s.id + '|' + s.name + '|' + s.avatar + '|' + (s.allViewed ? '1' : '0') + '|' + s.url)
     .join('\n');
   els.storiesBar.classList.remove('hidden');
   if (sig === lastStoriesSig && els.storiesBar.childElementCount > 0) return;
@@ -490,12 +525,12 @@ function renderStoriesBar() {
     chip.type = 'button';
     chip.className = 'story-chip';
     chip.setAttribute('role', 'listitem');
-    chip.title = story.hasStory
-      ? 'Открыть историю ' + story.name
-      : 'Открыть публикации и истории ' + story.name;
+    chip.title = story.storyCount > 1
+      ? 'История ' + story.name + ' (' + story.storyCount + ')'
+      : 'Открыть историю ' + story.name;
 
     const ring = document.createElement('span');
-    ring.className = 'story-ring' + (story.hasStory ? ' has-story' : '');
+    ring.className = 'story-ring ' + (story.allViewed ? 'viewed' : 'has-story');
     const inner = document.createElement('span');
     inner.className = 'story-ring-inner';
     if (story.avatar) {
@@ -653,6 +688,7 @@ function renderChatList() {
 
 async function selectConversation(chat) {
   selectedChat = chat;
+  clearReplyTarget();
   inThreadView = true;
   threadLoading = true;
   snapshot = { ...snapshot, messages: [] };
@@ -740,6 +776,13 @@ function renderMessages() {
 
     const row = document.createElement('div');
     row.className = 'msg-row ' + (m.sender === 'me' ? 'me' : 'them');
+
+    if (m.replyLabel) {
+      const rTag = document.createElement('span');
+      rTag.className = 'msg-reply-tag';
+      rTag.textContent = m.replyLabel;
+      row.appendChild(rTag);
+    }
 
     if (m.forwardedComment) {
       const fcCard = document.createElement('div');
@@ -907,11 +950,24 @@ function renderMessages() {
       row.appendChild(storyBtn);
     }
 
-    if (m.timeText) {
-      const t = document.createElement('span');
-      t.className = 'msg-time tabular';
-      t.textContent = m.timeText;
-      row.appendChild(t);
+    if (m.timeText || Number.isInteger(m.domIndex)) {
+      const foot = document.createElement('div');
+      foot.className = 'msg-foot';
+      if (m.timeText) {
+        const t = document.createElement('span');
+        t.className = 'msg-time tabular';
+        t.textContent = m.timeText;
+        foot.appendChild(t);
+      }
+      if (Number.isInteger(m.domIndex)) {
+        const repBtn = document.createElement('button');
+        repBtn.type = 'button';
+        repBtn.className = 'msg-reply-btn';
+        repBtn.textContent = 'Ответить';
+        repBtn.addEventListener('click', () => setReplyTarget(m));
+        foot.appendChild(repBtn);
+      }
+      row.appendChild(foot);
     }
 
     frag.appendChild(row);
@@ -935,10 +991,14 @@ async function submitMessage() {
   els.sendBtn.disabled = true;
 
   try {
-    const res = await window.messagesApi.sendMessage(text);
+    const payload = replyTarget
+      ? { text, replyToDomIndex: replyTarget.domIndex }
+      : { text };
+    const res = await window.messagesApi.sendMessage(payload);
     if (res && res.ok) {
       els.msgInput.value = '';
       els.msgInput.style.height = '32px';
+      clearReplyTarget();
     } else {
       toast('Не удалось отправить сообщение');
     }

@@ -166,6 +166,7 @@ let chatTabName = '';
 let chatTabOpen = false;
 let lastChatVideoPayload = null;
 let friendsUrlLoaded = false;
+let pendingFriendsSpaNav = false;
 let dmViewMode = 'none'; // 'none' | 'friends' | 'chat'
 let cleanupKey = null;
 let toastTimer = null;
@@ -521,6 +522,12 @@ async function onDmVideoDomReady() {
   if (token !== dmReadyToken) return;
 
   dmViewReady = true;
+  if (pendingFriendsSpaNav) {
+    pendingFriendsSpaNav = false;
+    setTimeout(() => {
+      evalOnView(els.dmVideoView, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.openFriendsSpa() : false');
+    }, 350);
+  }
   if (activeTab !== 'feed') {
     await pushSettingsToPage();
     setZoomOnView(els.dmVideoView, appState.zoom);
@@ -531,14 +538,17 @@ async function onDmVideoDomReady() {
 
 async function handleOpenFriendStory(payload) {
   if (!payload || payload.isFriendsFeed) {
+    // Прямой переход на /friends отдаёт HTTP 403; открываем /foryou и переходим в «Друзья» нативным SPA-кликом (HTTP 200!)
+    pendingFriendsSpaNav = true;
     await handleOpenDmVideo({
-      url: 'https://www.tiktok.com/friends?lang=ru',
+      url: 'https://www.tiktok.com/foryou?lang=ru',
       chatName: 'Истории друзей',
       rawTabLabel: true,
       allowScroll: true
     });
     return;
   }
+  pendingFriendsSpaNav = false;
   await handleOpenDmVideo({
     url: payload.url,
     chatName: payload.friendName ? 'История: ' + payload.friendName : 'История друга',
@@ -1746,9 +1756,8 @@ async function performDoubleClickLike(x, y) {
     }
 
     let res = null;
-    let triedFallback = false;
     for (let i = 0; i < 10; i++) {
-      await delay(150);
+      await delay(140);
       res = await pageEval(
         'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.verifyLikeResult(' +
           JSON.stringify(prep.videoId || '') + ',' +
@@ -1756,10 +1765,6 @@ async function performDoubleClickLike(x, y) {
           JSON.stringify(prep.beforeCount || '') + ') : null'
       );
       if (res && (res.loginRequired || res.ok)) break;
-      if (i === 3 && !triedFallback) {
-        triedFallback = true;
-        await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.directLikeFallback() : false');
-      }
     }
 
     if (!res) {
