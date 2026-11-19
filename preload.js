@@ -79,5 +79,8 @@ contextBridge.exposeInMainWorld('appApi', {
   onWindowBounds: (callback) => {
     ipcRenderer.on('window:bounds', (_event, info) => callback(info));
   },
+  onLiveBlocked: (callback) => {
+    ipcRenderer.on('feed:live-blocked', (_event, info) => callback(info));
+  },
   platform: process.platform
 });

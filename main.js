@@ -90,6 +90,7 @@ const DEFAULT_STATE = {
   autoSeconds: 10,
   muted: false,
   volume: 1,
+  skipLives: true,
   menuOpen: false,
   onboardingSeen: false
 };
@@ -205,6 +206,7 @@ function normalizeState(raw) {
     autoSeconds: Number.isFinite(seconds) ? clamp(seconds, 3, 120) : 10,
     muted: merged.muted === true,
     volume: Number.isFinite(volume) ? clamp(Math.round(volume * 100) / 100, 0, 1) : 1,
+    skipLives: merged.skipLives !== false,
     menuOpen: merged.menuOpen === true,
     onboardingSeen: merged.onboardingSeen === true
   };
@@ -1942,6 +1944,16 @@ function isTikTokVideoUrl(url) {
   return isTikTokUrl(url) && /\/(?:video|photo)\/\d+/.test(String(url));
 }
 
+function isTikTokLiveUrl(url) {
+  if (!isTikTokUrl(url)) return false;
+  try {
+    const parsed = new URL(url);
+    return /^\/(?:live(?:\/|$)|@[^/]+\/live(?:\/|$))/i.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
 function resolveTargetGuest(webContentsId) {
   if (Number.isInteger(webContentsId) && webContentsId > 0) {
     const wc = webContents.fromId(webContentsId);
@@ -1971,12 +1983,47 @@ function setupGuestWebContents() {
       });
     }
 
+    let lastLiveRecoverAt = 0;
+    const notifyLiveBlocked = (url, wasInPage) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('feed:live-blocked', {
+          url: String(url || ''),
+          wasInPage: Boolean(wasInPage),
+          skipLives: state.skipLives !== false
+        });
+      }
+    };
+
+    const recoverFromLiveNavigation = (url, wasInPage) => {
+      notifyLiveBlocked(url, wasInPage);
+      const now = Date.now();
+      if (now - lastLiveRecoverAt < 1200) return;
+      lastLiveRecoverAt = now;
+      try {
+        if (contents.navigationHistory && contents.navigationHistory.canGoBack()) {
+          const idx = contents.navigationHistory.getActiveIndex();
+          const prevEntry = idx > 0 ? contents.navigationHistory.getEntryAtIndex(idx - 1) : null;
+          if (prevEntry && prevEntry.url && !isTikTokLiveUrl(prevEntry.url)) {
+            contents.navigationHistory.goBack();
+            return;
+          }
+        }
+      } catch {}
+      try {
+        contents.loadURL(TIKTOK_URL);
+      } catch {}
+    };
+
     contents.setWindowOpenHandler(({ url }) => {
       if (isMessagesWebview && isTikTokVideoUrl(url)) {
         if (win && !win.isDestroyed()) {
           win.show();
           win.webContents.send('messages:open-video', { url, chatName: 'Чат' });
         }
+        return { action: 'deny' };
+      }
+      if (!isMessagesWebview && !state.menuOpen && isTikTokLiveUrl(url)) {
+        notifyLiveBlocked(url, false);
         return { action: 'deny' };
       }
       openExternal(url);
@@ -2003,9 +2050,34 @@ function setupGuestWebContents() {
         }
         return;
       }
+      if (!isMessagesWebview && !state.menuOpen && isTikTokLiveUrl(url)) {
+        event.preventDefault();
+        notifyLiveBlocked(url, false);
+        return;
+      }
       if (!isTikTokUrl(url)) {
         event.preventDefault();
         openExternal(url);
+      }
+    });
+
+    contents.on('will-redirect', (event, url) => {
+      if (!isMessagesWebview && !state.menuOpen && isTikTokLiveUrl(url)) {
+        event.preventDefault();
+        notifyLiveBlocked(url, false);
+      }
+    });
+
+    contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+      if (isMainFrame === false) return;
+      if (!isMessagesWebview && !state.menuOpen && isTikTokLiveUrl(url)) {
+        recoverFromLiveNavigation(url, true);
+      }
+    });
+
+    contents.on('did-navigate', (_event, url) => {
+      if (!isMessagesWebview && !state.menuOpen && isTikTokLiveUrl(url)) {
+        recoverFromLiveNavigation(url, false);
       }
     });
   });
@@ -2174,6 +2246,7 @@ function setupIpc() {
     if ('autoSeconds' in patch) next.autoSeconds = Number(patch.autoSeconds);
     if ('muted' in patch) next.muted = !!patch.muted;
     if ('volume' in patch) next.volume = Number(patch.volume);
+    if ('skipLives' in patch) next.skipLives = !!patch.skipLives;
     if ('menuOpen' in patch) next.menuOpen = !!patch.menuOpen;
     if ('onboardingSeen' in patch) next.onboardingSeen = !!patch.onboardingSeen;
 

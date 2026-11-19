@@ -14,6 +14,7 @@ const EARLY_NET_TAP = `(() => {
 
   const store = (window.__TTF_NET_STORE__ = window.__TTF_NET_STORE__ || {
     videos: new Map(),
+    liveIds: new Set(),
     commentsByVideo: new Map(),
     repliesByComment: new Map(),
     contacts: new Map(),
@@ -23,6 +24,7 @@ const EARLY_NET_TAP = `(() => {
     lastRepost: null,
     listeners: []
   });
+  if (!store.liveIds) store.liveIds = new Set();
   if (!store.contacts) store.contacts = new Map();
   if (!store.stories) store.stories = new Map();
   if (!('lastDigg' in store)) store.lastDigg = null;
@@ -204,11 +206,33 @@ const EARLY_NET_TAP = `(() => {
       for (const item of list) {
         if (!item || !item.id) continue;
         const id = String(item.id);
+        const itemRoomId = String(item.roomId || item.room_id || '');
+        const isLiveItem = Boolean(
+          Number(item.aweme_type ?? item.awemeType) === 101 ||
+          item.liveRoomInfo ||
+          item.live_room ||
+          item.live_room_info ||
+          item.cellRoom ||
+          item.cell_room ||
+          item.rawLiveData ||
+          item.liveRoom ||
+          item.liveData ||
+          item.live_data ||
+          item.isLive === true ||
+          item.is_live === true ||
+          /^live$/i.test(String(item.cardType || item.itemType || '')) ||
+          (itemRoomId && itemRoomId !== '0' && (!item.video || !Number(item.video.duration)))
+        );
+        if (isLiveItem) {
+          store.liveIds.add(id);
+          if (itemRoomId && itemRoomId !== '0') store.liveIds.add(itemRoomId);
+        }
         const author = item.author || {};
         const stats = item.stats || item.statsV2 || {};
         const music = item.music || {};
         store.videos.set(id, {
           id,
+          isLive: isLiveItem,
           desc: String(item.desc || ''),
           authorHandle: String(author.uniqueId || ''),
           authorName: String(author.nickname || author.uniqueId || ''),

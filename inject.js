@@ -10,7 +10,7 @@
  */
 function tiktokFloatPageController() {
   const KEY = '__TIKTOK_FLOAT__';
-  if (window[KEY] && window[KEY].version >= 12) return window[KEY].status();
+  if (window[KEY] && window[KEY].version >= 13) return window[KEY].status();
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -18,6 +18,7 @@ function tiktokFloatPageController() {
   function ensureNetStore() {
     const store = (window.__TTF_NET_STORE__ = window.__TTF_NET_STORE__ || {
       videos: new Map(),
+      liveIds: new Set(),
       commentsByVideo: new Map(),
       repliesByComment: new Map(),
       contacts: new Map(),
@@ -26,6 +27,7 @@ function tiktokFloatPageController() {
       lastRepost: null,
       listeners: []
     });
+    if (!store.liveIds) store.liveIds = new Set();
     if (!store.contacts) store.contacts = new Map();
     if (!store.listeners) store.listeners = [];
     if (!('lastDigg' in store)) store.lastDigg = null;
@@ -42,6 +44,11 @@ function tiktokFloatPageController() {
     muted: false,
     volume: 1,
     playbackRate: 1,
+    skipLives: true,
+    menuOpen: false,
+    lastNavDir: 1,
+    liveSkipLockUntil: 0,
+    liveBlockedEmitUntil: 0,
     timer: null,
     navLockUntil: 0,
     trackedVideo: null,
@@ -70,6 +77,426 @@ function tiktokFloatPageController() {
       window.postMessage({ __ttfBridge: true, payload: { type, data } }, '*');
     } catch {}
   }
+
+  /* ─── Защита от багнутых редиректов на LIVE и фильтрация стримов в ленте ─── */
+
+  function isLivePath(rawUrl) {
+    if (!rawUrl) return false;
+    try {
+      const parsed = new URL(String(rawUrl), location.origin);
+      if (
+        parsed.hostname &&
+        parsed.hostname !== 'tiktok.com' &&
+        !parsed.hostname.endsWith('.tiktok.com') &&
+        parsed.hostname !== location.hostname
+      ) {
+        return false;
+      }
+      return /^\/(?:live(?:\/|$)|@[^/]+\/live(?:\/|$))/i.test(parsed.pathname);
+    } catch {
+      return /^\/(?:live(?:\/|$)|@[^/]+\/live(?:\/|$))/i.test(String(rawUrl));
+    }
+  }
+
+  function isFeedListUrl(rawUrl) {
+    const u = String(rawUrl || '');
+    return (
+      u.includes('/api/recommend/item_list') ||
+      u.includes('/api/preload/item_list')
+    );
+  }
+
+  function isApiItemLive(item) {
+    if (!item || typeof item !== 'object') return false;
+    const awemeType = Number(item.aweme_type ?? item.awemeType);
+    if (awemeType === 101) return true;
+    if (
+      item.liveRoomInfo ||
+      item.live_room ||
+      item.live_room_info ||
+      item.cellRoom ||
+      item.cell_room ||
+      item.rawLiveData ||
+      item.liveRoom ||
+      item.liveData ||
+      item.live_data ||
+      item.isLive === true ||
+      item.is_live === true
+    ) {
+      return true;
+    }
+    if (/^live$/i.test(String(item.cardType || item.itemType || ''))) return true;
+    const itemRoomId = String(item.roomId || item.room_id || '');
+    if (itemRoomId && itemRoomId !== '0' && (!item.video || !Number(item.video.duration))) {
+      return true;
+    }
+    return false;
+  }
+
+  function recordLiveIdsFromItem(item) {
+    if (!item || typeof item !== 'object') return;
+    const candidates = [
+      item.id,
+      item.aweme_id,
+      item.awemeId,
+      item.roomId,
+      item.room_id,
+      item.liveRoomInfo && (item.liveRoomInfo.roomId || item.liveRoomInfo.room_id),
+      item.cellRoom && item.cellRoom.rawdata && item.cellRoom.rawdata.id_str
+    ];
+    for (const cid of candidates) {
+      const s = cid != null ? String(cid).trim() : '';
+      if (s && s !== '0') NET.liveIds.add(s);
+    }
+  }
+
+  function processFeedJsonForLives(data) {
+    if (!data || typeof data !== 'object') {
+      return { modified: false, removedCount: 0, json: data };
+    }
+    let modified = false;
+    let removedCount = 0;
+
+    for (const key of ['itemList', 'aweme_list']) {
+      const list = data[key];
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const kept = [];
+      let liveCount = 0;
+      for (const item of list) {
+        if (isApiItemLive(item)) {
+          liveCount++;
+          recordLiveIdsFromItem(item);
+        } else {
+          kept.push(item);
+        }
+      }
+      // Удаляем стримы до рендера React, сохраняя хотя бы 1 ролик чтобы не сломать пагинацию ленты
+      if (S.skipLives && !S.menuOpen && liveCount > 0 && kept.length > 0) {
+        data[key] = kept;
+        modified = true;
+        removedCount += liveCount;
+      }
+    }
+
+    return { modified, removedCount, json: data };
+  }
+
+  function scanSsrRehydrationForLives() {
+    try {
+      const el = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__');
+      const raw = el ? el.textContent : '';
+      if (!raw || raw.charCodeAt(0) !== 123) return;
+      const parsed = JSON.parse(raw);
+      const scope = parsed && parsed.__DEFAULT_SCOPE__;
+      if (!scope || typeof scope !== 'object') return;
+      for (const val of Object.values(scope)) {
+        if (!val || typeof val !== 'object') continue;
+        const lists = [val.itemList, val.aweme_list, val.recommendList];
+        for (const arr of lists) {
+          if (!Array.isArray(arr)) continue;
+          for (const item of arr) {
+            if (isApiItemLive(item)) recordLiveIdsFromItem(item);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  function emitLiveBlocked(url) {
+    const now = Date.now();
+    if (now < S.liveBlockedEmitUntil) return;
+    S.liveBlockedEmitUntil = now + 900;
+    bridgeEmit('live-blocked', {
+      url: String(url || ''),
+      skipLives: Boolean(S.skipLives)
+    });
+  }
+
+  function installMainWorldLiveGuards() {
+    // 1) Главный перехватчик fetch: вырезает LIVE-элементы из /api/recommend/item_list при S.skipLives
+    const curFetch = window.fetch;
+    if (typeof curFetch === 'function' && !curFetch.__ttfLiveFilterWrapped) {
+      const wrappedFetch = function (...args) {
+        const promise = curFetch.apply(this, args);
+        let url = '';
+        try {
+          const req = args[0];
+          url = typeof req === 'string' ? req : (req && req.url) || '';
+        } catch {}
+        if (!isFeedListUrl(url)) return promise;
+
+        return promise.then(async (res) => {
+          try {
+            if (!res || !res.ok) return res;
+            const ct = (res.headers && res.headers.get('content-type')) || '';
+            if (ct && !ct.includes('json') && !ct.includes('text')) return res;
+            const text = await res.clone().text();
+            if (!text || text.charCodeAt(0) !== 123) return res;
+            const json = JSON.parse(text);
+            const result = processFeedJsonForLives(json);
+            if (!result.modified) return res;
+            const headers = new Headers(res.headers);
+            headers.delete('content-length');
+            headers.delete('content-encoding');
+            const out = new Response(JSON.stringify(result.json), {
+              status: res.status,
+              statusText: res.statusText,
+              headers
+            });
+            try {
+              Object.defineProperty(out, 'url', { value: res.url, configurable: true });
+            } catch {}
+            return out;
+          } catch {
+            return res;
+          }
+        });
+      };
+      wrappedFetch.__ttfLiveFilterWrapped = true;
+      try { window.fetch = wrappedFetch; } catch {}
+    }
+
+    // 2) Перехватчик XMLHttpRequest: работает ДО пользовательских обработчиков readystatechange/load
+    const OrigXHR = window.XMLHttpRequest;
+    if (OrigXHR && OrigXHR.prototype && !OrigXHR.prototype.open.__ttfLiveFilterWrapped) {
+      const origOpen = OrigXHR.prototype.open;
+      const wrappedOpen = function (method, url) {
+        this.__ttfLiveUrl = typeof url === 'string' ? url : String(url || '');
+        if (!this.__ttfLiveHooked) {
+          this.__ttfLiveHooked = true;
+          this.addEventListener('readystatechange', () => {
+            try {
+              if (this.readyState !== 4 || this.status < 200 || this.status >= 300) return;
+              if (!isFeedListUrl(this.__ttfLiveUrl)) return;
+              let json = null;
+              if (this.responseType === 'json') {
+                json = this.response;
+              } else if (!this.responseType || this.responseType === 'text') {
+                const raw = this.responseText;
+                if (!raw || raw.charCodeAt(0) !== 123) return;
+                json = JSON.parse(raw);
+              } else {
+                return;
+              }
+              const result = processFeedJsonForLives(json);
+              if (!result.modified) return;
+              const filteredStr = JSON.stringify(result.json);
+              if (!this.responseType || this.responseType === 'text') {
+                Object.defineProperty(this, 'responseText', {
+                  value: filteredStr,
+                  configurable: true
+                });
+                Object.defineProperty(this, 'response', {
+                  value: filteredStr,
+                  configurable: true
+                });
+              } else if (this.responseType === 'json') {
+                Object.defineProperty(this, 'response', {
+                  value: result.json,
+                  configurable: true
+                });
+              }
+            } catch {}
+          });
+        }
+        return origOpen.apply(this, arguments);
+      };
+      wrappedOpen.__ttfLiveFilterWrapped = true;
+      try { OrigXHR.prototype.open = wrappedOpen; } catch {}
+    }
+
+    // 3) Блокировка SPA-переходов (history.pushState / replaceState) на /live и /@.../live
+    if (window.history) {
+      for (const method of ['pushState', 'replaceState']) {
+        const fn = window.history[method];
+        if (typeof fn === 'function' && !fn.__ttfLiveGuardWrapped) {
+          const guarded = function (stateObj, title, url) {
+            if (!S.menuOpen && url && isLivePath(url)) {
+              emitLiveBlocked(url);
+              return undefined;
+            }
+            return fn.apply(this, arguments);
+          };
+          guarded.__ttfLiveGuardWrapped = true;
+          try { window.history[method] = guarded; } catch {}
+        }
+      }
+    }
+
+    // 4) Блокировка window.open на страницу стрима
+    if (typeof window.open === 'function' && !window.open.__ttfLiveGuardWrapped) {
+      const origWindowOpen = window.open;
+      const guardedOpen = function (url) {
+        if (!S.menuOpen && url && isLivePath(url)) {
+          emitLiveBlocked(url);
+          return null;
+        }
+        return origWindowOpen.apply(this, arguments);
+      };
+      guardedOpen.__ttfLiveGuardWrapped = true;
+      try { window.open = guardedOpen; } catch {}
+    }
+
+    // 5) Capture-перехват кликов по ссылкам /live и карточкам стримов (чтобы случайный клик не уводил со страницы)
+    if (!window.__TTF_LIVE_CLICK_GUARD__) {
+      window.__TTF_LIVE_CLICK_GUARD__ = true;
+      document.addEventListener(
+        'click',
+        (event) => {
+          if (S.menuOpen) return;
+          const target = event.target;
+          if (!target || typeof target.closest !== 'function') return;
+          const liveLink = target.closest('a[href]');
+          if (liveLink) {
+            const href = liveLink.getAttribute('href') || '';
+            if (isLivePath(href)) {
+              event.preventDefault();
+              event.stopPropagation();
+              event.stopImmediatePropagation();
+              emitLiveBlocked(href);
+              return;
+            }
+          }
+          const liveCta = target.closest(
+            '[data-e2e="live-card"], [data-e2e*="watch-live" i], [data-e2e*="enter-live" i], [class*="LiveCard" i], [class*="DivLiveCard" i]'
+          );
+          if (liveCta && !target.closest('[data-e2e="like-icon"], [data-e2e="comment-icon"], [data-e2e="share-icon"]')) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.stopImmediatePropagation();
+            emitLiveBlocked(location.href);
+          }
+        },
+        true
+      );
+    }
+  }
+
+  const LIVE_CARD_SELECTORS = [
+    '[data-e2e="live-card"]',
+    '[data-e2e="live-room"]',
+    '[data-e2e="live-player"]',
+    '[data-e2e="live-feed-card"]',
+    '[data-e2e*="live-card" i]',
+    '[data-e2e*="watch-live" i]',
+    '[data-e2e*="enter-live" i]',
+    '[class*="LiveCard" i]',
+    '[class*="DivLiveCard" i]',
+    '[class*="LivePlayer" i]',
+    '[class*="DivLivePlayer" i]',
+    '[class*="LiveFeed" i]',
+    '[class*="LiveRoom" i]',
+    '[class*="DivLiveContent" i]'
+  ];
+
+  const LIVE_CTA_TEXT_RE =
+    /\b(?:click to watch live|tap to watch live|watch live|enter live|live now|нажмите,?\s*чтобы\s*(?:смотреть|войти\s*в)\s*live|смотреть\s*(?:live|прямой\s*эфир)|войти\s*в\s*live|перейти\s*в\s*live|в\s*прямом\s*эфире|прямой\s*эфир|дивитися\s*live)\b/i;
+
+  function isInsideAvatarEl(el) {
+    if (!el || typeof el.closest !== 'function') return false;
+    return Boolean(
+      el.closest(
+        '[data-e2e="video-author-avatar"], [data-e2e="cinema-creator-avatar"], [data-e2e="browse-user-avatar"], [data-e2e="cinema-creator-identity"], [class*="Avatar"], [class*="CreatorIdentity"]'
+      )
+    );
+  }
+
+  function isLiveFeedItem(item, video) {
+    if (isLivePath(location.pathname)) return true;
+    if (/\/(?:video|photo)\/\d+/.test(location.pathname)) return false;
+
+    const videoId = extractVideoId(item, video);
+    if (videoId && NET.liveIds.has(videoId)) return true;
+    const meta = videoId ? NET.videos.get(videoId) : null;
+    if (meta && meta.isLive) return true;
+
+    if (video && video.duration === Infinity && video.readyState >= 1) {
+      return true;
+    }
+
+    const hasFiniteNormalVideo = Boolean(
+      video && Number.isFinite(video.duration) && video.duration > 0.5 && video.duration < 7200
+    );
+
+    const roots = [];
+    const host = activeChromeHost();
+    if (item) roots.push(item);
+    if (host) roots.push(host);
+
+    for (const root of roots) {
+      for (const sel of LIVE_CARD_SELECTORS) {
+        try {
+          const found = root.querySelector(sel);
+          if (found && !isInsideAvatarEl(found)) return true;
+        } catch {}
+      }
+
+      try {
+        const links = root.querySelectorAll('a[href*="/live"]');
+        for (const a of links) {
+          if (isInsideAvatarEl(a)) continue;
+          if (isLivePath(a.getAttribute('href') || '')) return true;
+        }
+      } catch {}
+
+      try {
+        const candidates = root.querySelectorAll(
+          'button, a, span, p, div[class*="Live" i], div[class*="Badge" i], div[class*="Tag" i], [data-e2e*="live" i]'
+        );
+        for (const el of candidates) {
+          if (isInsideAvatarEl(el)) continue;
+          if (el.children.length > 3) continue;
+          const txt = cleanText(el);
+          if (!txt || txt.length > 90) continue;
+          if (LIVE_CTA_TEXT_RE.test(txt)) return true;
+          if (
+            !hasFiniteNormalVideo &&
+            /^(?:LIVE|ЭФИР)$/i.test(txt) &&
+            !el.closest('[data-e2e="video-desc"], [data-e2e="multiline-text-content"]')
+          ) {
+            return true;
+          }
+        }
+      } catch {}
+    }
+
+    return false;
+  }
+
+  function enforceLiveGuard(item, video, isLive) {
+    if (!isLive || !S.skipLives || S.menuOpen) return false;
+    if (/\/(?:video|photo)\/\d+/.test(location.pathname)) return false;
+    if (hasInteractiveModal()) return false;
+
+    // Мгновенно заглушаем и ставим на паузу, чтобы стрим даже не успел пикнуть
+    if (video) {
+      try {
+        video.muted = true;
+        if (!video.paused) video.pause();
+      } catch {}
+    }
+    if (item) {
+      for (const v of item.querySelectorAll('video')) {
+        try {
+          v.muted = true;
+          if (!v.paused) v.pause();
+        } catch {}
+      }
+    }
+
+    const now = Date.now();
+    if (now > S.liveSkipLockUntil) {
+      S.liveSkipLockUntil = now + 950;
+      bridgeEmit('live-skip', {
+        videoId: extractVideoId(item, video),
+        direction: S.lastNavDir || 1
+      });
+    }
+    return true;
+  }
+
+  installMainWorldLiveGuards();
+  scanSsrRehydrationForLives();
 
   function cleanText(node) {
     return node ? String(node.textContent || '').replace(/\s+/g, ' ').trim() : '';
@@ -1988,6 +2415,7 @@ function tiktokFloatPageController() {
 
   async function go(direction) {
     const step = direction >= 0 ? 1 : -1;
+    S.lastNavDir = step;
     const now = Date.now();
     if (now < S.navLockUntil) return 'busy';
     S.navLockUntil = now + 680;
@@ -2063,20 +2491,21 @@ function tiktokFloatPageController() {
   async function togglePlay() {
     const video = activeVideo();
     const item = activeFeedItem();
-    const button = queryActive(item, ['[data-e2e="anchoring-playback-control-play"]']);
+    const isLive = isLiveFeedItem(item, video);
+    const button = isLive ? null : queryActive(item, ['[data-e2e="anchoring-playback-control-play"]']);
 
     if (video) {
       if (video.paused) {
         const promise = video.play();
         if (promise && typeof promise.catch === 'function') {
           promise.catch(() => {
-            if (button) button.click();
+            if (button && !isLive) button.click();
           });
         }
       } else {
         video.pause();
       }
-    } else if (button) {
+    } else if (button && !isLive) {
       button.click();
     }
 
@@ -2104,7 +2533,19 @@ function tiktokFloatPageController() {
   function applyVolume() {
     const vol = clamp(Number(S.volume), 0, 1);
     const shouldMute = S.muted || vol <= 0.001;
+    const item = activeFeedItem();
+    const activeVid = activeVideo();
+    const activeIsSkippedLive = Boolean(
+      S.skipLives && !S.menuOpen && isLiveFeedItem(item, activeVid)
+    );
     for (const video of allVideos()) {
+      if (activeIsSkippedLive && (video === activeVid || (item && item.contains(video)))) {
+        video.muted = true;
+        if (!video.paused) {
+          try { video.pause(); } catch {}
+        }
+        continue;
+      }
       if (Math.abs(video.volume - vol) > 0.015) {
         try { video.volume = vol; } catch {}
       }
@@ -2158,6 +2599,11 @@ function tiktokFloatPageController() {
     const video = activeVideo();
     const videoId = extractVideoId(item, video);
     const meta = NET.videos.get(videoId) || {};
+    const isLive = isLiveFeedItem(item, video);
+
+    if (isLive) {
+      enforceLiveGuard(item, video, true);
+    }
 
     if (S.commentsOpen && videoId && S.currentVideoId && videoId !== S.currentVideoId) {
       S.currentVideoId = videoId;
@@ -2234,6 +2680,8 @@ function tiktokFloatPageController() {
       interactiveModal: hasInteractiveModal(),
       loggedIn: isLoggedInHeuristic(),
       unreadMessages: detectUnreadMessages(),
+      isLive,
+      skipLives: S.skipLives,
       isSingleVideoPage: /\/(?:video|photo)\/\d+/.test(location.pathname),
       videos: allVideos().length,
       href: location.href
@@ -2256,7 +2704,8 @@ function tiktokFloatPageController() {
       hud.playbackRate,
       hud.interactiveModal,
       hud.loggedIn,
-      hud.unreadMessages
+      hud.unreadMessages,
+      hud.isLive
     ].join('|');
 
     if (!force && key === S.lastHudKey) return;
@@ -2341,6 +2790,13 @@ function tiktokFloatPageController() {
     if (!(video instanceof HTMLVideoElement)) return;
 
     updateVideoAspectClass(video);
+    const item = activeFeedItem();
+    const activeVid = activeVideo();
+    if (video === activeVid && S.skipLives && !S.menuOpen && isLiveFeedItem(item, video)) {
+      enforceLiveGuard(item, video, true);
+      return;
+    }
+
     const targetVol = clamp(Number(S.volume), 0, 1);
     const shouldMute = S.muted || targetVol <= 0.001;
     if (Math.abs(video.volume - targetVol) > 0.015) {
@@ -2398,8 +2854,17 @@ function tiktokFloatPageController() {
         if (Number.isFinite(vol)) S.volume = clamp(Math.round(vol * 100) / 100, 0, 1);
       }
       if (config.playbackRate != null) setPlaybackRate(config.playbackRate);
+      if (typeof config.skipLives === 'boolean') S.skipLives = config.skipLives;
+      if (typeof config.menuOpen === 'boolean') S.menuOpen = config.menuOpen;
     }
 
+    try {
+      document.documentElement.classList.toggle(
+        'ttf-skip-lives',
+        Boolean(S.skipLives && !S.menuOpen)
+      );
+    } catch {}
+    installMainWorldLiveGuards();
     startTimer();
     applyVolume();
     applyPlaybackRate();
@@ -2429,11 +2894,28 @@ function tiktokFloatPageController() {
   window.addEventListener('ratechange', onMediaEvent, true);
   window.addEventListener('volumechange', onMediaEvent, true);
 
-  setInterval(checkAutoEndTick, 220);
+  setInterval(() => {
+    if (S.skipLives && !S.menuOpen) {
+      const item = activeFeedItem();
+      const video = activeVideo();
+      if (isLiveFeedItem(item, video)) {
+        enforceLiveGuard(item, video, true);
+        return;
+      }
+    }
+    checkAutoEndTick();
+  }, 220);
 
   setInterval(() => {
-    applyVolume();
-    applyPlaybackRate();
+    installMainWorldLiveGuards();
+    const item = activeFeedItem();
+    const video = activeVideo();
+    if (S.skipLives && !S.menuOpen && isLiveFeedItem(item, video)) {
+      enforceLiveGuard(item, video, true);
+    } else {
+      applyVolume();
+      applyPlaybackRate();
+    }
     markStealthShareModals();
     emitHud(false);
     if (S.commentsOpen) emitComments(false);
@@ -2464,10 +2946,15 @@ function tiktokFloatPageController() {
   }
 
   window[KEY] = {
-    version: 12,
+    version: 13,
     openFriendsSpa,
     configure,
     status,
+    isLiveCurrent: () => isLiveFeedItem(activeFeedItem(), activeVideo()),
+    recordNavDirection: (dir) => {
+      S.lastNavDir = dir < 0 ? -1 : 1;
+      return S.lastNavDir;
+    },
     togglePlay,
     setPaused,
     seekTo,
@@ -2794,6 +3281,20 @@ window.TTF_INJECT = {
     [class*="DivLoginContainer"] {
       opacity: 1 !important;
       pointer-events: auto !important;
+    }
+
+    /* Блокируем клики по оверлеям LIVE-карточек (защита от случайного ухода на /live) */
+    [data-e2e="live-card"] a[href*="/live"],
+    [class*="LiveCard" i] a[href*="/live"],
+    [class*="DivLive" i] a[href*="/live"],
+    [data-e2e*="watch-live" i],
+    [data-e2e*="enter-live" i] {
+      pointer-events: none !important;
+    }
+
+    html.ttf-skip-lives [data-e2e="live-card"],
+    html.ttf-skip-lives [class*="DivLiveCard" i] {
+      opacity: 0 !important;
     }
   `
 };

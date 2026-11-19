@@ -115,6 +115,8 @@ const els = {
   modeIntervalBtn: $('modeIntervalBtn'),
   modeEndBtn: $('modeEndBtn'),
   intervalChips: $('intervalChips'),
+  skipLivesBtn: $('skipLivesBtn'),
+  skipLivesMeta: $('skipLivesMeta'),
   sizeMeta: $('sizeMeta'),
   presetChips: $('presetChips'),
   volumeSlider: $('volumeSlider'),
@@ -192,6 +194,9 @@ let actionBusy = false;
 let dmEngineWarmed = false;
 let volumeSaveTimer = null;
 let lastNonZeroVolume = 0.7;
+let lastNavDirection = 1;
+let liveSkipCooldownUntil = 0;
+let liveBlockToastUntil = 0;
 
 let dmContactsCache = [];
 let dialogContactsCache = [];
@@ -285,6 +290,9 @@ async function init() {
     });
   }
   window.appApi.onWindowBounds(handleWindowBounds);
+  if (window.appApi.onLiveBlocked) {
+    window.appApi.onLiveBlocked(handleLiveBlocked);
+  }
 
   startWebview();
 }
@@ -304,6 +312,7 @@ function fallbackState() {
     autoSeconds: 10,
     muted: false,
     volume: 1,
+    skipLives: true,
     menuOpen: false,
     onboardingSeen: false,
     width: 412,
@@ -702,6 +711,19 @@ function onWebviewIpcMessage(event) {
     }
   } else if (msg.type === 'auto-next') {
     if (activeTab === 'feed' || activeTab === 'friends') navigate(1);
+  } else if (msg.type === 'live-skip') {
+    if (
+      (activeTab === 'feed' || activeTab === 'friends') &&
+      appState &&
+      appState.skipLives !== false &&
+      !appState.menuOpen
+    ) {
+      const dir =
+        msg.data && msg.data.direction === -1 ? -1 : lastNavDirection || 1;
+      skipLiveCard(dir);
+    }
+  } else if (msg.type === 'live-blocked') {
+    handleLiveBlocked(msg.data || {});
   } else if (msg.type === 'contacts' && Array.isArray(msg.data)) {
     dialogContactsCache = msg.data;
     if (window.appApi.updateDialogContactsCache) {
@@ -848,7 +870,9 @@ async function pushSettingsToPage() {
     seconds: appState.autoSeconds,
     muted: appState.muted,
     volume: typeof appState.volume === 'number' ? appState.volume : 1,
-    playbackRate: appState.playbackRate || 1
+    playbackRate: appState.playbackRate || 1,
+    skipLives: appState.skipLives !== false,
+    menuOpen: Boolean(appState.menuOpen)
   });
 
   const result = await pageEval(
@@ -1062,6 +1086,7 @@ async function finishQrLogin(loggedInNow) {
     updateMenuUI();
     await applyCleanupCss();
     await saveState({ menuOpen: false });
+    await pushSettingsToPage();
   }
   syncPassthroughMode();
   if (loggedInNow) {
@@ -1939,6 +1964,10 @@ function bindPageControls() {
     setAutoSeconds(Number(btn.dataset.seconds));
   });
 
+  if (els.skipLivesBtn) {
+    els.skipLivesBtn.addEventListener('click', toggleSkipLives);
+  }
+
   els.presetChips.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-preset]');
     if (!btn) return;
@@ -2067,17 +2096,64 @@ async function setPlaybackSpeed(rate) {
   toast('Скорость: ' + formatSpeed(rate));
 }
 
-async function navigate(direction) {
-  if (activeTab === 'chat') {
-    toast('Переключись на «Рекомендации» или «Истории», чтобы листать');
+async function skipLiveCard(direction) {
+  if (!activeReady() || actionBusy) return;
+  if (activeTab === 'chat') return;
+  const now = Date.now();
+  if (now < liveSkipCooldownUntil) return;
+  liveSkipCooldownUntil = now + 850;
+
+  const step = direction < 0 ? -1 : 1;
+  const moved = await navigate(step, { isAutoLiveSkip: true });
+  if (!moved && step < 0) {
+    await navigate(1, { isAutoLiveSkip: true });
+  }
+  if (Date.now() > liveBlockToastUntil) {
+    liveBlockToastUntil = Date.now() + 2200;
+    toast('Стрим пропущен');
+  }
+}
+
+function handleLiveBlocked(info) {
+  if (appState && appState.menuOpen) return;
+  const shouldSkip = Boolean(
+    (appState ? appState.skipLives !== false : true) &&
+      (activeTab === 'feed' || activeTab === 'friends')
+  );
+  if (shouldSkip) {
+    skipLiveCard(lastNavDirection || 1);
     return;
   }
+  const now = Date.now();
+  if (now > liveBlockToastUntil) {
+    liveBlockToastUntil = now + 2400;
+    toast('Переход на страницу стрима заблокирован');
+  }
+}
+
+async function navigate(direction, opts) {
+  const isAutoLiveSkip = Boolean(opts && opts.isAutoLiveSkip);
+  if (activeTab === 'chat') {
+    if (!isAutoLiveSkip) {
+      toast('Переключись на «Рекомендации» или «Истории», чтобы листать');
+    }
+    return false;
+  }
   if (!activeReady()) {
-    toast('Лента ещё загружается');
-    return;
+    if (!isAutoLiveSkip) toast('Лента ещё загружается');
+    return false;
   }
 
   const step = direction < 0 ? -1 : 1;
+  if (!isAutoLiveSkip) {
+    lastNavDirection = step;
+    pageEval(
+      'window.__TIKTOK_FLOAT__ && window.__TIKTOK_FLOAT__.recordNavDirection ? window.__TIKTOK_FLOAT__.recordNavDirection(' +
+        step +
+        ') : null'
+    ).catch(() => {});
+  }
+
   const before = await pageEval(
     'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.navSnapshot() : null'
   );
@@ -2097,17 +2173,19 @@ async function navigate(direction) {
 
   if (movedByKey) {
     setTimeout(() => pushSettingsToPage(), 350);
-    return;
+    return true;
   }
 
   const result = await pageEval(
     'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.next(' + step + ') : null'
   );
 
-  if (result === 'busy') return;
+  if (result === 'busy') return false;
   if (!result || result === 'none') {
-    toast('Не получилось переключить ролик');
+    if (!isAutoLiveSkip) toast('Не получилось переключить ролик');
+    return false;
   }
+  return true;
 }
 
 async function togglePlay() {
@@ -2273,6 +2351,23 @@ async function setAutoSeconds(seconds) {
   await pushSettingsToPage();
 }
 
+async function toggleSkipLives() {
+  if (!appState) return;
+  appState.skipLives = !(appState.skipLives !== false);
+  updateSkipLivesUI();
+  await saveState({ skipLives: appState.skipLives });
+  await pushSettingsToPage();
+  toast(appState.skipLives ? 'Стримы скрыты в ленте' : 'Стримы снова видны в ленте');
+  if (
+    appState.skipLives &&
+    currentHud &&
+    currentHud.isLive &&
+    (activeTab === 'feed' || activeTab === 'friends')
+  ) {
+    skipLiveCard(1);
+  }
+}
+
 async function toggleSiteMenu() {
   if (!appState) return;
   appState.menuOpen = !appState.menuOpen;
@@ -2288,6 +2383,7 @@ async function toggleSiteMenu() {
   }
 
   await saveState({ menuOpen: appState.menuOpen });
+  await pushSettingsToPage();
 }
 
 async function stepZoom(delta) {
@@ -2508,6 +2604,7 @@ function applyStateToUI() {
   updatePinUI();
   updateSpeedUI();
   updateAutoUI();
+  updateSkipLivesUI();
   updateMuteUI();
   updateMenuUI();
   updateZoomUI();
@@ -2558,6 +2655,20 @@ function updateAutoUI() {
     : 'Выключен';
 
   if (activeReady()) updateIdlePill();
+}
+
+function updateSkipLivesUI() {
+  if (!appState || !els.skipLivesBtn) return;
+  const enabled = appState.skipLives !== false;
+  els.skipLivesBtn.setAttribute('aria-checked', String(enabled));
+  els.skipLivesBtn.title = enabled
+    ? 'Стримы скрыты · нажми, чтобы показывать LIVE в ленте'
+    : 'Стримы видны · нажми, чтобы отключить LIVE в ленте';
+  if (els.skipLivesMeta) {
+    els.skipLivesMeta.textContent = enabled
+      ? 'Убирает LIVE из ленты и блокирует переход'
+      : 'Стримы видны, редирект на LIVE заблокирован';
+  }
 }
 
 function updateMuteUI() {

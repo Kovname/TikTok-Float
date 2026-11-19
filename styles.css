@@ -1408,6 +1408,60 @@ button {
   color: var(--text-muted);
 }
 
+.sheet-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sheet-toggle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ios-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: background-color 180ms var(--ease), border-color 180ms var(--ease);
+}
+
+.ios-switch:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.ios-switch[aria-checked="true"] {
+  background: var(--positive);
+  border-color: rgba(48, 209, 88, 0.55);
+}
+
+.ios-switch[aria-checked="true"]:hover {
+  background: #34d95d;
+}
+
+.ios-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.36);
+  transition: transform 180ms var(--ease);
+}
+
+.ios-switch[aria-checked="true"] .ios-switch-thumb {
+  transform: translateX(18px);
+}
+
 .segmented {
   display: grid;
   grid-template-columns: 1fr 1fr;
