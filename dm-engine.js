@@ -137,10 +137,33 @@ function tiktokFloatDmEngine() {
     return false;
   }
 
+  const PREVIEW_SYSTEM_RE =
+    /^(?:(?:вы\s+)?(?:поделил(?:ся|ась|ись)|отреагировал[аи]?|лайкнул[аи]?|отправил[аи]?|прислал[аи]?|переслал[аи]?|упомянул[аи]?|ответил[аи]?|просмотрел[аи]?|начал[аи]?)|поделил(?:ся|ась|ись)\s+(?:видео|фото|публикац|истори|ссылк|профил)|(?:you\s+)?(?:shared|sent|reacted|liked|replied|mentioned)\s+(?:a\s+)?(?:video|photo|story|post|message|link|sticker|gif)|сообщения|messages|запросы|requests|настройки|settings|скачать контакты|download leads|загрузка|loading)/i;
+
+  function isInvalidChatName(name, lastMessage) {
+    const n = String(name || '').replace(/\s+/g, ' ').trim();
+    if (!n || n.length > 64) return true;
+    if (SHORT_TIME_RE.test(n) || /^\d+$/.test(n)) return true;
+    if (PREVIEW_SYSTEM_RE.test(n)) return true;
+    if (n.includes('💬 Комментарий')) return true;
+    const lm = String(lastMessage || '').replace(/\s+/g, ' ').trim();
+    if (lm && lm.toLowerCase() === n.toLowerCase()) return true;
+    return false;
+  }
+
   function findChatRowElements() {
+    // 1) Основной точный селектор TikTok /messages — никогда не смешиваем с внутренними wrapper-элементами!
+    const exactPrimary = Array.from(document.querySelectorAll('[data-e2e="chat-list-item"]')).filter((el) => {
+      if (isTopGlobalHeader(el)) return false;
+      const r = el.getBoundingClientRect();
+      return r.left >= -8 && r.left <= 560 && r.width >= 110 && r.width <= 540 && r.height >= 36 && r.height <= 140;
+    });
+    if (exactPrimary.length > 0) return exactPrimary;
+
+    // 2) Запасной селектор для альтернативных версий / Business Suite iframe
     const raw = Array.from(
       document.querySelectorAll(
-        '[data-e2e="chat-list-item"], [class*="DivItemWrapper"], [class*="ConversationItem"], [class*="ChatListItem"], [class*="DivChatListItem"], [class*="conversation-item"], [class*="chat-list-item"], [class*="session-item"], [role="listitem"]'
+        '[class*="DivItemWrapper"], [class*="ConversationItem"], [class*="ChatListItem"], [class*="DivChatListItem"], [class*="conversation-item"], [class*="chat-list-item"], [class*="session-item"], [role="listitem"]'
       )
     );
     const out = [];
@@ -157,7 +180,7 @@ function tiktokFloatDmEngine() {
 
     if (out.length > 0) return out;
 
-    // Геометрический фоллбэк для Business Suite / Semi-UI / Tailwind-списков диалогов в левой колонке
+    // 3) Геометрический фоллбэк для Business Suite / Semi-UI / Tailwind-списков диалогов в левой колонке
     const geoCandidates = [];
     const minTop = isIframeContext ? -4 : 75;
     for (const el of document.querySelectorAll('div, li')) {
@@ -221,12 +244,23 @@ function tiktokFloatDmEngine() {
         .filter((x) => x.txt.length > 0);
 
       const nameEl = row.querySelector(
-        '[data-e2e="chat-list-username"], [class*="PInfoNickname"], [class*="Nickname"], [class*="Username"], [class*="nickname"], [class*="username"]'
+        '[data-e2e="chat-list-username"], [data-e2e="chat-list-item-nickname"], [class*="PInfoNickname"], [class*="Nickname"], [class*="Username"], [class*="nickname"], [class*="username"]'
       );
       let name = cleanText(nameEl);
-      if (!name && leafTexts.length) name = leafTexts[0].txt;
-      if (!name || name.length > 64) return;
-      if (/^(сообщения|messages|запросы|requests|настройки|settings|скачать контакты)$/i.test(name)) return;
+      // Если элемент никнейма уже есть в DOM, но ещё пустой (TikTok не догрузил профиль) — пропускаем строку, НЕ подставляем текст превью вместо имени!
+      if (nameEl && !name) return;
+      if (!name) {
+        const previewNode = row.querySelector(
+          '[data-e2e="chat-list-content"], [class*="PInfoExtract"], [class*="LastMessage"], [class*="Preview"]'
+        );
+        const firstNonPreview = leafTexts.find(
+          (x) =>
+            (!previewNode || (x.el !== previewNode && !previewNode.contains(x.el))) &&
+            !isInvalidChatName(x.txt, '')
+        );
+        name = firstNonPreview ? firstNonPreview.txt : '';
+      }
+      if (isInvalidChatName(name, '')) return;
 
       let handle = '';
       const link = row.querySelector('a[href*="/@"]');
@@ -296,6 +330,7 @@ function tiktokFloatDmEngine() {
         timeText = '';
       }
       timeText = formatShortDate(timeText);
+      if (isInvalidChatName(name, lastMessage)) return;
 
       const cls = String(row.className || '');
       let id = (handle || name).toLowerCase();
@@ -331,20 +366,22 @@ function tiktokFloatDmEngine() {
 
     if (liveList.length > 0) hasLoadedChatsOnce = true;
 
-    const liveById = new Map(liveList.map((c) => [c.id, c]));
-    const merged = [];
+    // Сначала возвращаем живые чаты в точном порядке DOM (самые свежие сверху), затем ранее проскролленные валидные чаты
+    const liveIds = new Set(liveList.map((c) => c.id));
+    const merged = [...liveList];
 
     for (const [id, cached] of seenChats.entries()) {
-      const live = liveById.get(id);
-      const item = live
-        ? live
-        : {
-            ...cached,
-            index: null,
-            active: Boolean(lastOpenedChatKey && lastOpenedChatKey === id),
-            stale: true
-          };
-      merged.push(item);
+      if (liveIds.has(id)) continue;
+      if (isInvalidChatName(cached.name, cached.lastMessage)) {
+        seenChats.delete(id);
+        continue;
+      }
+      merged.push({
+        ...cached,
+        index: null,
+        active: Boolean(lastOpenedChatKey && lastOpenedChatKey === id),
+        stale: true
+      });
     }
 
     return merged;
@@ -502,7 +539,7 @@ function tiktokFloatDmEngine() {
     return null;
   }
 
-  function extractVideoMetaFromFiber(el) {
+  function extractVideoMetaFromFiber(el, domAuthorHint) {
     if (!el) return null;
     const queue = [el, ...Array.from(el.querySelectorAll('*')).slice(0, 14)];
     let cur = el.parentElement;
@@ -527,6 +564,14 @@ function tiktokFloatDmEngine() {
             const parsedContent = parseContentPayload(obj.content);
             const srcObj = parsedContent || obj;
 
+            // Сначала проверяем прямые готовые ссылки TikTok внутри Fiber
+            if (typeof srcObj.href === 'string' && /\/@[^/]+\/(?:video|photo)\/\d+/.test(srcObj.href)) {
+              return { url: srcObj.href, thumb: '', author: domAuthorHint ? '@' + domAuthorHint.replace(/^@/, '') : '', desc: '', needsClickResolve: false };
+            }
+            if (typeof srcObj.url === 'string' && /tiktok\.com\/@[^/]+\/(?:video|photo)\/\d+/.test(srcObj.url)) {
+              return { url: srcObj.url, thumb: '', author: domAuthorHint ? '@' + domAuthorHint.replace(/^@/, '') : '', desc: '', needsClickResolve: false };
+            }
+
             const awemeId =
               srcObj.itemId ||
               srcObj.item_id ||
@@ -543,11 +588,16 @@ function tiktokFloatDmEngine() {
             if (awemeId && /^\d{15,22}$/.test(String(awemeId))) {
               const author =
                 srcObj.authorUniqueId ||
+                srcObj.author_unique_id ||
                 srcObj.uniqueId ||
+                srcObj.unique_id ||
+                srcObj.share_user_name ||
                 srcObj.author_name ||
                 srcObj.authorName ||
+                (srcObj.user && (srcObj.user.unique_id || srcObj.user.uniqueId || srcObj.user.nickname)) ||
                 (srcObj.author && (srcObj.author.uniqueId || srcObj.author.unique_id || srcObj.author.nickname)) ||
-                (srcObj.aweme && srcObj.aweme.author && (srcObj.aweme.author.uniqueId || srcObj.aweme.author.nickname)) ||
+                (srcObj.aweme && srcObj.aweme.author && (srcObj.aweme.author.uniqueId || srcObj.aweme.author.unique_id || srcObj.aweme.author.nickname)) ||
+                domAuthorHint ||
                 '';
               const desc =
                 srcObj.desc ||
@@ -568,10 +618,16 @@ function tiktokFloatDmEngine() {
                     : coverObj && Array.isArray(coverObj.urlList) && coverObj.urlList[0]
                       ? coverObj.urlList[0]
                       : '';
+              const isPhoto =
+                Number(srcObj.aweme_type || srcObj.awemeType || srcObj.item_type || 0) === 150 ||
+                Boolean(srcObj.isPhoto || srcObj.is_photo || (srcObj.aweme && Number(srcObj.aweme.aweme_type) === 150));
+              const kindSeg = isPhoto ? 'photo' : 'video';
               const handleClean = String(author || '').replace(/^@/, '').trim();
-              const url = handleClean
-                ? 'https://www.tiktok.com/@' + handleClean + '/video/' + awemeId
-                : 'https://www.tiktok.com/video/' + awemeId;
+              const validHandle = /^[a-zA-Z0-9._-]{2,36}$/.test(handleClean) ? handleClean : '';
+              // ВАЖНО: TikTok Web ВСЕГДА отдаёт 404 на голый /video/<id> без /@username/! Всегда ставим /@<handle>/ или /@_/!
+              const url = validHandle
+                ? 'https://www.tiktok.com/@' + validHandle + '/' + kindSeg + '/' + awemeId
+                : 'https://www.tiktok.com/@_/' + kindSeg + '/' + awemeId;
 
               const commentText =
                 srcObj.comment_text ||
@@ -602,15 +658,9 @@ function tiktokFloatDmEngine() {
                 thumb,
                 author: handleClean ? '@' + handleClean : '',
                 desc: String(desc || '').slice(0, 140),
-                forwardedComment
+                forwardedComment,
+                needsClickResolve: true
               };
-            }
-
-            if (typeof srcObj.href === 'string' && /\/(?:video|photo)\/\d+/.test(srcObj.href)) {
-              return { url: srcObj.href, thumb: '', author: '', desc: '' };
-            }
-            if (typeof srcObj.url === 'string' && /tiktok\.com\/.*\/(?:video|photo)\/\d+/.test(srcObj.url)) {
-              return { url: srcObj.url, thumb: '', author: '', desc: '' };
             }
 
             for (const k of Object.keys(obj)) {
@@ -699,7 +749,7 @@ function tiktokFloatDmEngine() {
   function findChatMainArea() {
     const paneLeft = getChatPaneLeftBoundary();
     const directCandidates = document.querySelectorAll(
-      '[data-e2e="chat-room"], [data-e2e="chat-main"], [class*="DivChatMain"], [class*="DivChatBox"], [class*="ChatRoom"]'
+      '[data-e2e="dm-new-chatbox"], [data-e2e="chat-room"], [data-e2e="chat-main"], [class*="DivChatMain"], [class*="DivChatBox"], [class*="ChatRoom"]'
     );
     for (const d of directCandidates) {
       const r = d.getBoundingClientRect();
@@ -750,7 +800,7 @@ function tiktokFloatDmEngine() {
     const scope = chatMain || document;
 
     const directCandidates = scope.querySelectorAll(
-      '[data-e2e="chat-message-list"], [class*="DivMessageList"], [class*="MessageList"], [class*="DivChatMain"]'
+      '[data-e2e="dm-new-message-list"], [data-e2e="chat-message-list"], [class*="DivMessageList"], [class*="MessageList"], [class*="DivChatMain"]'
     );
     for (const direct of directCandidates) {
       const r = direct.getBoundingClientRect();
@@ -811,7 +861,7 @@ function tiktokFloatDmEngine() {
 
     const bySelector = Array.from(
       root.querySelectorAll(
-        '[data-e2e="chat-item"], [data-e2e*="message-item"], [class*="DivChatItemContainer"], [class*="DivChatItemWrapper"], [class*="DivMessageItem"], [class*="MessageItem"], [class*="ChatItem"], [class*="message-item"]'
+        '[data-e2e="dm-new-chat-item"], [data-e2e="chat-item"], [data-e2e*="message-item"], [class*="DivChatItemContainer"], [class*="DivChatItemWrapper"], [class*="DivMessageItem"], [class*="MessageItem"], [class*="ChatItem"], [class*="message-item"]'
       )
     ).filter((el) => !isExcludedChatChrome(el, headerEl, paneLeft));
 
@@ -993,11 +1043,15 @@ function tiktokFloatDmEngine() {
       }
 
       let video = null;
+      const isStoryReactionRow = Boolean(
+        node.querySelector('[class*="DivRefVideoContent"]') ||
+        /(?:отреагировал[аи]?\s+на\s+(?:эту\s+)?истори|ответил[аи]?\s+на\s+истори|reacted\s+to\s+.*story|replied\s+to\s+.*story)/i.test(rawText)
+      );
       const videoLink = node.querySelector('a[href*="/video/"], a[href*="/photo/"]');
       const videoCard =
         videoLink ||
         node.querySelector(
-          '[data-e2e*="video"], [class*="VideoCard"], [class*="ShareVideo"], [class*="AwemeCard"], [class*="DivVideoContainer"], [class*="VideoWrapper"], [class*="video-card" i]'
+          '[data-e2e="dm-new-shared-video"], [data-e2e*="video"], [class*="VideoCard"], [class*="ShareVideo"], [class*="AwemeCard"], [class*="DivVideoContainer"], [class*="VideoWrapper"], [class*="video-card" i]'
         );
 
       const nonAvatarImgs = Array.from(node.querySelectorAll('img')).filter((img) => {
@@ -1007,25 +1061,29 @@ function tiktokFloatDmEngine() {
       });
 
       const looksLikeVideoCard =
-        Boolean(fiberVideo) ||
-        Boolean(videoCard) ||
-        nonAvatarImgs.some((im) => {
-          const ir = im.getBoundingClientRect();
-          return ir.height >= 76 && ir.height > ir.width * 1.02;
-        });
+        !isStoryReactionRow &&
+        (Boolean(videoCard) ||
+          Boolean(fiberVideo) ||
+          nonAvatarImgs.some((im) => {
+            const ir = im.getBoundingClientRect();
+            return ir.height >= 76 && ir.height > ir.width * 1.02;
+          }));
 
       if (looksLikeVideoCard) {
         const coverImg = nonAvatarImgs[0];
         const coverSrc = coverImg ? coverImg.currentSrc || coverImg.src : '';
-        const rawAuthor = cleanText(node.querySelector('[class*="Author"], [class*="Nickname"], a[href*="/@"]'));
+        const cardScope = videoCard || node;
+        const rawAuthor = cleanText(
+          cardScope.querySelector('[class*="PNickname"], [class*="Author"], [class*="Nickname"], a[href*="/@"]')
+        );
         const fiberMeta =
-          fiberVideo ||
-          extractVideoMetaFromFiber(videoCard || coverImg || node);
+          extractVideoMetaFromFiber(videoCard || coverImg || node, rawAuthor) ||
+          fiberVideo;
         const url =
           (videoLink && videoLink.href) ||
           (fiberMeta && fiberMeta.url) ||
           '';
-        const vAuthor = (fiberMeta && fiberMeta.author) || rawAuthor || '';
+        const vAuthor = (fiberMeta && fiberMeta.author) || (rawAuthor ? '@' + rawAuthor.replace(/^@/, '') : '') || '';
         const vDesc = (fiberMeta && fiberMeta.desc) || '';
 
         video = {
@@ -1034,6 +1092,7 @@ function tiktokFloatDmEngine() {
           author: vAuthor,
           desc: vDesc,
           domIndex: idx,
+          needsClickResolve: videoLink ? false : Boolean(!url || (fiberMeta && fiberMeta.needsClickResolve)),
           forwardedComment: (fiberMeta && fiberMeta.forwardedComment) || null
         };
       }
@@ -1049,13 +1108,21 @@ function tiktokFloatDmEngine() {
       let text = '';
       if (!video) {
         const textEl = node.querySelector(
-          '[data-e2e="chat-text"], [class*="PText"], [class*="TextContainer"], p'
+          '[data-e2e="dm-new-message-text"], [data-e2e="chat-text"], [class*="PText"], [class*="TextContainer"], p'
         );
         text = cleanText(textEl) || rawText;
+        if (isStoryReactionRow) {
+          const senderHdr = cleanText(node.querySelector('[class*="DivChatItemSenderNameContainer"]'));
+          if (senderHdr && text && !text.toLowerCase().includes('истори') && !text.toLowerCase().includes('story')) {
+            text = senderHdr + ' · ' + text;
+          } else if (senderHdr && !text) {
+            text = senderHdr;
+          }
+        }
       } else {
-        const pTexts = Array.from(node.querySelectorAll('[class*="PText"], [data-e2e="chat-text"]'))
+        const pTexts = Array.from(node.querySelectorAll('[data-e2e="dm-new-message-text"], [class*="PText"], [data-e2e="chat-text"]'))
           .map((n) => cleanText(n))
-          .filter((t) => t && t !== video.author && t !== video.desc);
+          .filter((t) => t && t !== video.author && t !== video.author.replace(/^@/, '') && t !== video.desc);
         text = pTexts.join(' ') || (rawText.includes('💬') ? rawText : '');
       }
 
@@ -1105,7 +1172,7 @@ function tiktokFloatDmEngine() {
         text,
         video,
         forwardedComment,
-        isStory: Boolean(text && /(?:истори|story|stories)/i.test(text)),
+        isStory: Boolean(isStoryReactionRow || (text && /(?:истори|story|stories)/i.test(text))),
         images,
         timeText
       });
@@ -1115,12 +1182,14 @@ function tiktokFloatDmEngine() {
     lastScrapeMode = 'rows';
     let finalMessages = messages;
 
-    // Геометрический TreeWalker-сканер по всему document.body в пределах правой панели чата
-    const generic = scrapeMessagesGeneric(document.body, headerEl, boxRect, paneLeft);
-    const genMsgCount = generic.filter((m) => m.kind === 'msg').length;
-    if (genMsgCount > rowMsgCount) {
-      finalMessages = generic;
-      lastScrapeMode = 'generic';
+    // Геометрический TreeWalker-сканер включаем ТОЛЬКО если структурированные строки чата вообще не найдены (иначе он дробит карточки видео и шапки историй!)
+    if (rowMsgCount === 0) {
+      const generic = scrapeMessagesGeneric(document.body, headerEl, boxRect, paneLeft);
+      const genMsgCount = generic.filter((m) => m.kind === 'msg').length;
+      if (genMsgCount > 0) {
+        finalMessages = generic;
+        lastScrapeMode = 'generic';
+      }
     }
 
     return {
@@ -1208,24 +1277,28 @@ function tiktokFloatDmEngine() {
       if (tag === 'IMG') {
         if (el.closest('[class*="Avatar"], [class*="avatar"], [data-e2e*="avatar"]')) continue;
         if (el.closest('a[href*="/video/"], a[href*="/photo/"]')) continue;
+        if (el.closest('[class*="DivRefVideoContent"]')) continue;
         // Маленькие круглые аватарки собеседника слева от сообщения (<= 44px) пропускаем
         if (r.width <= 44 && r.height <= 44) continue;
         const src = el.currentSrc || el.src || '';
         if (!src) continue;
-        const fiber = extractVideoMetaFromFiber(el);
+        const vCard = el.closest('[data-e2e="dm-new-shared-video"], [class*="DivVideoContainer"], [class*="VideoCard"], [class*="ShareVideo"]');
+        const domNick = vCard ? cleanText(vCard.querySelector('[class*="PNickname"], [class*="Author"], [class*="Nickname"]')) : '';
+        const fiber = extractVideoMetaFromFiber(vCard || el, domNick);
         const inVideoContainer = Boolean(
-          el.closest('[class*="video" i], [class*="aweme" i], [class*="share" i], [data-e2e*="video" i]')
+          vCard || el.closest('[class*="video" i], [class*="aweme" i], [class*="share" i], [data-e2e*="video" i]')
         );
         if (fiber || inVideoContainer || (r.height >= 72 && r.height > r.width * 1.02)) {
           entries.push({
             type: 'video',
-            el,
+            el: vCard || el,
             top: r.top,
             rect: r,
             url: (fiber && fiber.url) || '',
             thumb: src,
-            author: (fiber && fiber.author) || '',
+            author: (fiber && fiber.author) || (domNick ? '@' + domNick.replace(/^@/, '') : ''),
             desc: (fiber && fiber.desc) || '',
+            needsClickResolve: true,
             forwardedComment: (fiber && fiber.forwardedComment) || null
           });
         } else if (r.width >= 48 || r.height >= 48) {
@@ -1395,7 +1468,7 @@ function tiktokFloatDmEngine() {
     const seen = new Set();
 
     const addStory = (item) => {
-      if (!item || !item.name) return;
+      if (!item || !item.name || isInvalidChatName(item.name, '')) return;
       const key = String(item.handle || item.name).toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
@@ -1405,12 +1478,12 @@ function tiktokFloatDmEngine() {
         handle: item.handle || '',
         avatar: item.avatar || '',
         url: item.url || (item.handle ? 'https://www.tiktok.com/@' + item.handle : ''),
-        hasStory: Boolean(item.hasStory || item.hasActiveRing),
-        hasActiveRing: Boolean(item.hasStory || item.hasActiveRing)
+        hasStory: true,
+        hasActiveRing: true
       });
     };
 
-    // 1) Ищем элементы историй в DOM (аватарки со Story-кольцом)
+    // 1) Ищем ТОЛЬКО реальные элементы историй в DOM (аватарки со Story-кольцом)
     const storyEls = document.querySelectorAll(
       '[data-e2e*="story" i], [class*="StoryItem" i], [class*="StoryRing" i], [class*="AvatarStory" i]'
     );
@@ -1418,7 +1491,7 @@ function tiktokFloatDmEngine() {
       if (isTopGlobalHeader(el)) continue;
       const row = el.closest('[data-e2e="chat-list-item"], [class*="DivItemWrapper"], [class*="ConversationItem"], a') || el;
       const name = extractRowNickname(row);
-      if (!name || name.length > 48) continue;
+      if (isInvalidChatName(name, '')) continue;
       const avatar = extractAvatarUrl(row);
       let handle = '';
       const link = row.querySelector('a[href*="/@"]') || (row.tagName === 'A' ? row : null);
@@ -1426,24 +1499,20 @@ function tiktokFloatDmEngine() {
         const m = (link.getAttribute('href') || '').match(/\/@([^/?#]+)/);
         if (m) handle = m[1];
       }
-      addStory({ name, handle, avatar, hasActiveRing: true });
+      addStory({ name, handle, avatar });
     }
 
-    // 2) Дополняем друзьями из списка чатов (в первую очередь тех, у кого в превью есть «история» / story или свежая активность)
+    // 2) Дополняем ТОЛЬКО теми реальными друзьями, у которых в чате действительно есть упоминание истории (никогда не присваиваем истории за обычные видео/фото!)
     if (Array.isArray(conversations) && conversations.length) {
-      const prioritized = [...conversations].sort((a, b) => {
-        const aStory = /(?:истори|story)/i.test(a.lastMessage || '') ? 1 : 0;
-        const bStory = /(?:истори|story)/i.test(b.lastMessage || '') ? 1 : 0;
-        if (aStory !== bStory) return bStory - aStory;
-        return (b.unreadCount || 0) - (a.unreadCount || 0);
-      });
-      for (const c of prioritized.slice(0, 14)) {
-        addStory({
-          name: c.name,
-          handle: c.handle,
-          avatar: c.avatar,
-          hasActiveRing: /(?:истори|story)/i.test(c.lastMessage || '') || (c.unreadCount || 0) > 0
-        });
+      for (const c of conversations) {
+        if (!c || isInvalidChatName(c.name, c.lastMessage)) continue;
+        if (/(?:истори|story|stories)/i.test(c.lastMessage || '')) {
+          addStory({
+            name: c.name,
+            handle: c.handle,
+            avatar: c.avatar
+          });
+        }
       }
     }
 
@@ -1679,7 +1748,7 @@ function tiktokFloatDmEngine() {
     lastOpenedChatKey = String(chatId || name || '').toLowerCase();
   }
 
-  function locateMessageCard(domIndex) {
+  async function locateMessageCard(domIndex) {
     let el = null;
     if (lastScrapeMode === 'generic') {
       el = lastGenericEls[domIndex] || null;
@@ -1692,17 +1761,18 @@ function tiktokFloatDmEngine() {
       if (node) {
         el =
           node.querySelector(
-            'a[href*="/video/"], a[href*="/photo/"], [class*="VideoCard"], [class*="ShareVideo"], [class*="DivVideoContainer"], img'
+            '[data-e2e="dm-new-shared-video"], a[href*="/video/"], a[href*="/photo/"], [class*="DivVideoContainer"], [class*="VideoCard"], [class*="ShareVideo"], img'
           ) || node;
       }
     }
     if (!el || !el.isConnected) return { ok: false };
     try { el.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch {}
+    await sleep(60);
     const r = el.getBoundingClientRect();
     return {
       ok: true,
-      x: Math.round(r.left + r.width / 2),
-      y: Math.round(r.top + r.height / 2),
+      x: Math.round(Math.max(10, Math.min(window.innerWidth - 10, r.left + r.width / 2))),
+      y: Math.round(Math.max(10, Math.min(window.innerHeight - 10, r.top + r.height / 2))),
       href: location.href
     };
   }
@@ -1817,7 +1887,7 @@ function tiktokFloatDmEngine() {
   }
 
   async function resolveVideoUrlByClick(domIndex) {
-    const loc = locateMessageCard(domIndex);
+    const loc = await locateMessageCard(domIndex);
     if (!loc.ok) return '';
     const paneLeft = getChatPaneLeftBoundary();
     const chatMain = findChatMainArea() || document.body;
@@ -1830,7 +1900,7 @@ function tiktokFloatDmEngine() {
       const target = items[domIndex];
       card =
         (target &&
-          (target.querySelector('a[href*="/video/"], a[href*="/photo/"], [class*="VideoCard"], [class*="ShareVideo"], img') ||
+          (target.querySelector('[data-e2e="dm-new-shared-video"], a[href*="/video/"], a[href*="/photo/"], [class*="DivVideoContainer"], [class*="VideoCard"], [class*="ShareVideo"], img') ||
             target)) ||
         null;
     }
@@ -1890,7 +1960,7 @@ function tiktokFloatDmEngine() {
   }, 650);
 
   window.__TTF_DM_ENGINE__ = {
-    version: 8,
+    version: 9,
     hasChatRows: () => findChatRowElements().length > 0,
     snapshot,
     emitSnapshot,

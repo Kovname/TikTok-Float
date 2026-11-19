@@ -10,7 +10,7 @@
  */
 function tiktokFloatPageController() {
   const KEY = '__TIKTOK_FLOAT__';
-  if (window[KEY] && window[KEY].version >= 10) return window[KEY].status();
+  if (window[KEY] && window[KEY].version >= 11) return window[KEY].status();
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -369,16 +369,18 @@ function tiktokFloatPageController() {
     const handle = extractAuthorHandle(item) || meta.authorHandle || '';
     if (/^\d{12,}$/.test(videoId)) {
       if (handle) return 'https://www.tiktok.com/@' + handle + '/video/' + videoId;
-      return 'https://www.tiktok.com/video/' + videoId;
+      return 'https://www.tiktok.com/@_/video/' + videoId;
     }
     return location.href;
   }
 
   function findLikeContainer(item) {
-    return queryActive(item, [
+    const icon = queryActive(item, [
       '[data-e2e="like-icon"]',
       '[data-e2e="browse-like-icon"]'
     ]);
+    if (!icon) return null;
+    return icon.closest('button, [role="button"]') || icon;
   }
 
   function findCommentContainer(item) {
@@ -420,15 +422,17 @@ function tiktokFloatPageController() {
 
   function isRepostedDom(container) {
     if (!container) return false;
+    const btn = container.tagName === 'BUTTON'
+      ? container
+      : container.closest('button, [role="button"]') || container.querySelector('button');
     if (container.getAttribute('aria-pressed') === 'true') return true;
-    const btn = container.querySelector('button');
     if (btn && btn.getAttribute('aria-pressed') === 'true') return true;
     const aria = (
       (container.getAttribute('aria-label') || '') +
       ' ' +
       (btn ? btn.getAttribute('aria-label') || '' : '')
     ).toLowerCase();
-    return /отменить репост|удалить репост|убрать репост|remove repost|undo repost/i.test(aria);
+    return /отменить репост|удалить репост|убрать репост|удалить повторн|видалити репост|скасувати репост|прибрати репост|remove repost|undo repost/i.test(aria);
   }
 
   function isReddishColor(colorStr) {
@@ -452,20 +456,36 @@ function tiktokFloatPageController() {
     return r >= 190 && g <= 110 && b <= 130;
   }
 
+  function getExplicitAriaPressed(container) {
+    if (!container) return null;
+    const btn = container.tagName === 'BUTTON'
+      ? container
+      : container.closest('button, [role="button"]') || container.querySelector('button');
+    const cVal = container.getAttribute('aria-pressed');
+    if (cVal === 'true' || cVal === 'false') return cVal === 'true';
+    const bVal = btn ? btn.getAttribute('aria-pressed') : null;
+    if (bVal === 'true' || bVal === 'false') return bVal === 'true';
+    return null;
+  }
+
   function isLikedDom(container) {
     if (!container) return false;
-    if (container.getAttribute('aria-pressed') === 'true') return true;
-    const btn = container.querySelector('button');
-    if (btn && btn.getAttribute('aria-pressed') === 'true') return true;
+    const btn = container.tagName === 'BUTTON'
+      ? container
+      : container.closest('button, [role="button"]') || container.querySelector('button');
+
+    const explicit = getExplicitAriaPressed(container);
+    if (explicit !== null) return explicit;
 
     const aria = (
       (container.getAttribute('aria-label') || '') +
       ' ' +
       (btn ? btn.getAttribute('aria-label') || '' : '')
     ).toLowerCase();
-    if (/убрать|отменить|снят|unlike|liked/i.test(aria)) return true;
+    if (/убрать|отменить|снят|видалит|скасуват|unlike|liked/i.test(aria)) return true;
 
-    const nodes = [container, ...Array.from(container.querySelectorAll('svg, path, span, button'))];
+    const root = btn || container;
+    const nodes = [root, ...Array.from(root.querySelectorAll('svg, path, span, button'))];
     for (const node of nodes) {
       try {
         if (isReddishColor(node.getAttribute('fill'))) return true;
@@ -542,6 +562,12 @@ function tiktokFloatPageController() {
       '[role="dialog"], [aria-modal="true"], [class*="TUXModal"], [class*="DivShareModal"], [class*="ShareModal"], [class*="DivModalContainer"]'
     );
     for (const el of candidates) {
+      try {
+        const st = getComputedStyle(el);
+        if (st.display === 'none' || st.visibility === 'hidden') continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 40 || r.height < 40) continue;
+      } catch {}
       if (
         el.querySelector('#loginContainer, [class*="DivLoginContainer"], [id*="captcha"], #tiktok-verify-ele')
       ) {
@@ -610,7 +636,7 @@ function tiktokFloatPageController() {
     if (!inViewport(x, y)) return false;
     const hit = document.elementFromPoint(x, y);
     if (!hit) return false;
-    return el === hit || el.contains(hit) || hit.contains(el);
+    return el === hit || el.contains(hit);
   }
 
   function pinTarget(el, extra, options) {
@@ -618,7 +644,9 @@ function tiktokFloatPageController() {
     if (!el || !el.isConnected) return { ok: false, reason: 'not_found' };
 
     const opts = options || {};
-    const target = opts.preferInnerButton ? el.querySelector('button') || el : el;
+    const target = opts.preferInnerButton
+      ? (el.tagName === 'BUTTON' ? el : el.closest('button') || el.querySelector('button') || el)
+      : el;
     S.pinnedClickEl = target;
 
     let cur = target.parentElement;
@@ -693,6 +721,18 @@ function tiktokFloatPageController() {
     };
   }
 
+  function directLikeFallback() {
+    const item = activeFeedItem();
+    const container = findLikeContainer(item);
+    if (!container) return false;
+    try {
+      container.click();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function directClickPinned() {
     if (!S.pinnedClickEl || !S.pinnedClickEl.isConnected) return false;
     try {
@@ -704,7 +744,21 @@ function tiktokFloatPageController() {
   }
 
   const REPOST_LABEL_RE =
-    /^(репост|отменить репост|сделать репост|удалить репост|убрать репост|повторить публикацию|повторная публикация|repost|remove repost|undo repost)$/i;
+    /^(репост|репостнуть|отменить репост|сделать репост|удалить репост|убрать репост|убрать из репостов|повторить публикацию|повторная публикация|удалить повторную публикацию|отменить повторную публикацию|видалити репост|скасувати репост|прибрати репост|поділитися повторно|repost|reposted|remove repost|undo repost)$/i;
+
+  function isRemoveRepostLabel(str) {
+    const s = String(str || '').toLowerCase();
+    return (
+      s.includes('отмен') ||
+      s.includes('удал') ||
+      s.includes('убрат') ||
+      s.includes('видал') ||
+      s.includes('скасув') ||
+      s.includes('прибр') ||
+      s.includes('remove') ||
+      s.includes('undo')
+    );
+  }
 
   function findRepostElement() {
     const modals = findShareModals();
@@ -887,12 +941,10 @@ function tiktokFloatPageController() {
         (el.getAttribute('title') || '')
       ).toLowerCase();
       const willRemove =
-        label.includes('отмен') ||
-        label.includes('удал') ||
-        label.includes('убрат') ||
-        label.includes('remove') ||
-        label.includes('undo');
-      return pinTarget(el, { willRemove, videoId }, { scrollFirst: true });
+        isRemoveRepostLabel(label) ||
+        Boolean(arg && arg.wasReposted) ||
+        S.repostedIds.has(videoId);
+      return pinTarget(el, { willRemove, videoId, inModal: findShareModals().length > 0 }, { scrollFirst: true });
     }
 
     if (kind === 'comment') {
@@ -973,7 +1025,7 @@ function tiktokFloatPageController() {
     }
 
     if (changed && videoId) {
-      S.likedOverrides.set(videoId, { liked, until: Date.now() + 2600 });
+      S.likedOverrides.set(videoId, { liked, settledAt: Date.now() + 1500, until: Date.now() + 30000 });
       const meta = NET.videos.get(videoId);
       if (meta) meta.liked = liked;
     }
@@ -1009,17 +1061,17 @@ function tiktokFloatPageController() {
     for (const el of alerts) {
       const txt = cleanText(el).toLowerCase();
       if (!txt || txt.length > 140) continue;
-      if (/репост удал|репост отмен|убран из репост|repost removed|removed from repost|undo repost/i.test(txt)) {
+      if (/репост удал|репост отмен|убран из репост|повторн.*удал|репост видал|репост скасов|прибран.*репост|repost removed|removed from repost|undo repost/i.test(txt)) {
         return { confirmed: true, reposted: false };
       }
-      if (/сделали репост|добавлено в репост|опубликовано повторно|повторная публикация|репост|reposted/i.test(txt)) {
+      if (/сделали репост|добавлено в репост|опубликовано повторно|повторная публикация|зробили репост|додано в репост|репост|reposted/i.test(txt)) {
         return { confirmed: true, reposted: true };
       }
     }
     return null;
   }
 
-  function evaluateRepostState(videoId, willRemove) {
+  function evaluateRepostState(videoId, willRemove, allowDialogCloseFallback) {
     const loginRequired = hasLoginModal();
     if (loginRequired) {
       return { done: true, ok: false, loginRequired: true, reposted: false };
@@ -1042,12 +1094,7 @@ function tiktokFloatPageController() {
     const stillLabel = repostEl
       ? (cleanText(repostEl) + ' ' + (repostEl.getAttribute('aria-label') || '')).toLowerCase()
       : '';
-    const isNowRemoveLabel =
-      stillLabel.includes('отмен') ||
-      stillLabel.includes('удал') ||
-      stillLabel.includes('убрат') ||
-      stillLabel.includes('remove') ||
-      stillLabel.includes('undo');
+    const isNowRemoveLabel = isRemoveRepostLabel(stillLabel);
     const labelFlipped = Boolean(
       repostEl && stillLabel.length > 0 && (willRemove ? !isNowRemoveLabel : isNowRemoveLabel)
     );
@@ -1064,17 +1111,21 @@ function tiktokFloatPageController() {
     if (labelFlipped) {
       return { done: true, ok: true, loginRequired: false, reposted: !Boolean(willRemove) };
     }
+    // Если после клика по плитке «Репост / Удалить репост» сам TikTok автоматически закрыл Share-модалку (стандартное поведение при успешном репосте/удалении)
+    if (allowDialogCloseFallback && findShareModals().length === 0) {
+      return { done: true, ok: true, loginRequired: false, reposted: !Boolean(willRemove) };
+    }
 
     return { done: false, ok: false, loginRequired: false, reposted: S.repostedIds.has(videoId) };
   }
 
   function checkRepostProgress(videoId, willRemove) {
     markStealthShareModals();
-    return evaluateRepostState(videoId, willRemove);
+    return evaluateRepostState(videoId, willRemove, false);
   }
 
-  function finishRepost(videoId, willRemove) {
-    const state = evaluateRepostState(videoId, willRemove);
+  function finishRepost(videoId, willRemove, clickedInModal) {
+    const state = evaluateRepostState(videoId, willRemove, Boolean(clickedInModal));
 
     if (!state.loginRequired) {
       closeShareDialogOnly();
@@ -2128,8 +2179,14 @@ function tiktokFloatPageController() {
     let liked = likeContainer ? isLikedDom(likeContainer) : Boolean(meta.liked);
     const override = S.likedOverrides.get(videoId);
     if (override) {
-      if (Date.now() < override.until) {
-        liked = override.liked;
+      const nowTs = Date.now();
+      const explicitAria = likeContainer ? getExplicitAriaPressed(likeContainer) : null;
+      if (nowTs < override.until) {
+        if (explicitAria !== null && nowTs > (override.settledAt || 0)) {
+          liked = explicitAria;
+        } else {
+          liked = override.liked;
+        }
       } else {
         S.likedOverrides.delete(videoId);
       }
@@ -2398,7 +2455,7 @@ function tiktokFloatPageController() {
   }
 
   window[KEY] = {
-    version: 10,
+    version: 11,
     configure,
     status,
     togglePlay,
@@ -2411,6 +2468,7 @@ function tiktokFloatPageController() {
     getCurrentVideoUrl,
     prepareClickTarget,
     directClickPinned,
+    directLikeFallback,
     releaseClickTarget,
     verifyLikeResult,
     checkRepostProgress,

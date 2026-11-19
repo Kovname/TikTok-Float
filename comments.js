@@ -915,7 +915,7 @@ function getForwardVideoUrl() {
     const cleanAuth = String(currentData.authorHandle || '').replace(/^@/, '').trim();
     return cleanAuth
       ? 'https://www.tiktok.com/@' + cleanAuth + '/video/' + currentData.videoId
-      : 'https://www.tiktok.com/video/' + currentData.videoId;
+      : 'https://www.tiktok.com/@_/video/' + currentData.videoId;
   }
   return '';
 }

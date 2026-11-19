@@ -642,12 +642,24 @@ function ensureDmEngine() {
     }, 2200);
   };
 
-  dmEngineWin.webContents.on('will-navigate', (e, url) =>
-    handleBusinessSuiteRedirect(e, url, 'will-navigate')
-  );
+  dmEngineWin.webContents.on('will-navigate', (e, url) => {
+    if (dmResolvingVideo && isTikTokVideoUrl(url)) {
+      dmPendingVideoUrl = url;
+      e.preventDefault();
+      logDmDebug('resolved-video-will-nav', url);
+      return;
+    }
+    handleBusinessSuiteRedirect(e, url, 'will-navigate');
+  });
   dmEngineWin.webContents.on('will-redirect', (e, url) =>
     handleBusinessSuiteRedirect(e, url, 'will-redirect')
   );
+  dmEngineWin.webContents.on('did-navigate-in-page', (_e, url) => {
+    if (dmResolvingVideo && isTikTokVideoUrl(url)) {
+      dmPendingVideoUrl = url;
+      logDmDebug('resolved-video-in-page', url);
+    }
+  });
 
   const onFrameReady = async (tag) => {
     if (!dmEngineWin || dmEngineWin.isDestroyed()) return;
@@ -894,6 +906,7 @@ async function resolveDmVideoUrlTrusted(domIndex) {
   dmResolvingVideo = true;
   dmPendingVideoUrl = '';
   const wc = dmEngineWin.webContents;
+  const beforeUrl = wc.getURL();
   try {
     wc.focus();
     wc.sendInputEvent({ type: 'mouseMove', x: loc.x, y: loc.y });
@@ -901,8 +914,8 @@ async function resolveDmVideoUrlTrusted(domIndex) {
     await new Promise((r) => setTimeout(r, 42));
     wc.sendInputEvent({ type: 'mouseUp', x: loc.x, y: loc.y, button: 'left', clickCount: 1 });
 
-    for (let i = 0; i < 16 && !dmPendingVideoUrl; i++) {
-      await new Promise((r) => setTimeout(r, 200));
+    for (let i = 0; i < 12 && !dmPendingVideoUrl; i++) {
+      await new Promise((r) => setTimeout(r, 160));
       const href = await dmEval('location.href');
       if (typeof href === 'string' && isTikTokVideoUrl(href)) dmPendingVideoUrl = href;
     }
@@ -913,12 +926,16 @@ async function resolveDmVideoUrlTrusted(domIndex) {
   const url = dmPendingVideoUrl;
   dmPendingVideoUrl = '';
   if (url && dmEngineWin && !dmEngineWin.isDestroyed()) {
-    try {
-      dmEngineWin.webContents.navigationHistory.goBack();
-    } catch {
-      await dmEval('history.back()');
+    const afterUrl = dmEngineWin.webContents.getURL();
+    if (afterUrl && afterUrl !== beforeUrl && isTikTokVideoUrl(afterUrl)) {
+      try {
+        dmEngineWin.webContents.navigationHistory.goBack();
+      } catch {
+        await dmEval('history.back()');
+      }
     }
   }
+  logDmDebug('resolve-video-result', url || '(empty)');
   return url;
 }
 
@@ -1097,31 +1114,82 @@ async function sendTextToDmContacts(contacts, messageText) {
   return { ok: sent > 0, sentCount: sent };
 }
 
+const INVALID_DM_NAME_RE =
+  /^(?:(?:вы\s+)?(?:поделил(?:ся|ась|ись)|отреагировал[аи]?|лайкнул[аи]?|отправил[аи]?|прислал[аи]?|переслал[аи]?|упомянул[аи]?|ответил[аи]?|просмотрел[аи]?|начал[аи]?)|поделил(?:ся|ась|ись)\s+(?:видео|фото|публикац|истори|ссылк|профил)|(?:you\s+)?(?:shared|sent|reacted|liked|replied|mentioned)\s+(?:a\s+)?(?:video|photo|story|post|message|link|sticker|gif)|сообщения|messages|запросы|requests|настройки|settings|скачать контакты|загрузка|loading|\d{1,2}:\d{2}|\d{1,2}\.\d{1,2}(?:\.\d{2,4})?|\d+)$/i;
+
+function isInvalidDmChatName(name, lastMessage) {
+  const n = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!n || n.length > 64) return true;
+  if (INVALID_DM_NAME_RE.test(n)) return true;
+  if (n.includes('💬 Комментарий')) return true;
+  const lm = String(lastMessage || '').replace(/\s+/g, ' ').trim();
+  if (lm && lm.toLowerCase() === n.toLowerCase()) return true;
+  return false;
+}
+
+function normalizeTikTokVideoUrl(rawUrl) {
+  const u = String(rawUrl || '').trim();
+  if (!u) return '';
+  const bare = u.match(/^https?:\/\/(?:www\.|m\.)?tiktok\.com\/(video|photo)\/(\d{12,})(.*)$/i);
+  if (bare) {
+    return 'https://www.tiktok.com/@_/' + bare[1].toLowerCase() + '/' + bare[2] + (bare[3] || '');
+  }
+  return u;
+}
+
 function handleDmSnapshot(rawSnapshot) {
   if (!rawSnapshot || typeof rawSnapshot !== 'object') return;
   const snapshot = { ...rawSnapshot };
 
-  // Сохраняем все найденные чаты в кэш, чтобы при смене фрейма или обновлении страницы чаты НИКОГДА не пропадали через секунду!
-  if (Array.isArray(snapshot.conversations) && snapshot.conversations.length > 0) {
-    for (const c of snapshot.conversations) {
-      if (!c || !c.id) continue;
+  const incomingValid = Array.isArray(snapshot.conversations)
+    ? snapshot.conversations.filter((c) => c && c.id && !isInvalidDmChatName(c.name, c.lastMessage))
+    : [];
+
+  // Сохраняем все валидные чаты в кэш, но всегда сохраняем свежий порядок DOM сверху!
+  if (incomingValid.length > 0) {
+    const incomingIds = new Set();
+    const ordered = [];
+    for (const c of incomingValid) {
+      incomingIds.add(c.id);
       const prev = cachedDmConversations.get(c.id) || {};
-      cachedDmConversations.set(c.id, {
+      const merged = {
         ...prev,
         ...c,
         avatar: c.avatar || prev.avatar || '',
         handle: c.handle || prev.handle || '',
         lastMessage: c.lastMessage || prev.lastMessage || ''
-      });
+      };
+      cachedDmConversations.set(c.id, merged);
+      ordered.push(merged);
     }
+    for (const [id, cached] of cachedDmConversations.entries()) {
+      if (incomingIds.has(id)) continue;
+      if (isInvalidDmChatName(cached.name, cached.lastMessage)) {
+        cachedDmConversations.delete(id);
+        continue;
+      }
+      ordered.push({ ...cached, index: null, stale: true });
+    }
+    snapshot.conversations = ordered;
   } else if (snapshot.loggedIn !== false && cachedDmConversations.size > 0) {
-    snapshot.conversations = Array.from(cachedDmConversations.values());
+    snapshot.conversations = Array.from(cachedDmConversations.values()).filter(
+      (c) => c && !isInvalidDmChatName(c.name, c.lastMessage)
+    );
     snapshot.loading = false;
+  } else {
+    snapshot.conversations = [];
   }
 
-  if (Array.isArray(snapshot.stories) && snapshot.stories.length > 0) {
+  const validStories = Array.isArray(snapshot.stories)
+    ? snapshot.stories.filter((s) => s && s.name && !isInvalidDmChatName(s.name, ''))
+    : [];
+  if (validStories.length > 0) {
     cachedDmStories.length = 0;
-    cachedDmStories.push(...snapshot.stories);
+    cachedDmStories.push(...validStories);
+    snapshot.stories = validStories;
+  } else if (snapshot.conversations.length > 0) {
+    cachedDmStories.length = 0;
+    snapshot.stories = [];
   } else if (cachedDmStories.length > 0) {
     snapshot.stories = [...cachedDmStories];
   }
@@ -2050,7 +2118,7 @@ function setupIpc() {
       const cleanAuth = String(video.authorHandle || '').replace(/^@/, '').trim();
       videoUrl = cleanAuth
         ? 'https://www.tiktok.com/@' + cleanAuth + '/video/' + video.videoId
-        : 'https://www.tiktok.com/video/' + video.videoId;
+        : 'https://www.tiktok.com/@_/video/' + video.videoId;
     }
 
     const rawAuth =
@@ -2247,22 +2315,27 @@ function setupIpc() {
 
   ipcMain.handle('messages:open-video', async (_event, payload) => {
     if (!payload) return false;
-    let url = String(payload.url || '');
-    if (!url && Number.isInteger(payload.domIndex) && payload.domIndex >= 0) {
-      url = await resolveDmVideoUrlTrusted(payload.domIndex);
-      if (!url) {
-        url =
+    let url = normalizeTikTokVideoUrl(payload.url || '');
+    const needsClick =
+      Number.isInteger(payload.domIndex) &&
+      payload.domIndex >= 0 &&
+      (!url || Boolean(payload.needsClickResolve) || /\/@_\//.test(url));
+
+    if (needsClick) {
+      let clickedUrl = await resolveDmVideoUrlTrusted(payload.domIndex);
+      if (!clickedUrl) {
+        clickedUrl =
           (await dmEval(
             'window.__TTF_DM_ENGINE__ ? window.__TTF_DM_ENGINE__.resolveVideoUrlByClick(' +
               payload.domIndex + ') : ""'
           )) || '';
       }
-      const reopenName = String(payload.chatName || '');
-      if (url && reopenName && reopenName !== 'Чат') {
-        setTimeout(() => openDmChatTrusted('', null, reopenName).catch(() => {}), 700);
+      if (clickedUrl && isTikTokVideoUrl(clickedUrl)) {
+        url = normalizeTikTokVideoUrl(clickedUrl);
       }
     }
     if (!url || !win || win.isDestroyed()) return false;
+    logDmDebug('open-video-in-player', url);
     win.show();
     win.webContents.send('messages:open-video', {
       url,

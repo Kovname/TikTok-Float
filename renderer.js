@@ -64,7 +64,6 @@ const els = {
 
   sourceTabs: $('sourceTabs'),
   tabFeedBtn: $('tabFeedBtn'),
-  tabFriendsBtn: $('tabFriendsBtn'),
   tabChatWrap: $('tabChatWrap'),
   tabChatBtn: $('tabChatBtn'),
   tabChatCloseBtn: $('tabChatCloseBtn'),
@@ -474,9 +473,6 @@ function handleExternalState(next) {
 
 function bindSourceTabs() {
   els.tabFeedBtn.addEventListener('click', () => switchSourceTab('feed'));
-  if (els.tabFriendsBtn) {
-    els.tabFriendsBtn.addEventListener('click', () => openFriendsStoriesFeed());
-  }
   els.tabChatBtn.addEventListener('click', () => switchSourceTab('chat'));
   els.tabChatCloseBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -533,51 +529,21 @@ async function onDmVideoDomReady() {
   }
 }
 
-async function openFriendsStoriesFeed() {
-  closeShareSheet();
-  closeSettings();
-  initDmVideoViewOnce();
-
-  if (ready) {
-    evalOnView(els.view, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
-  }
-
-  const alreadyOnFriends = dmViewMode === 'friends' && friendsUrlLoaded && dmViewReady;
-  activeTab = 'friends';
-  dmViewMode = 'friends';
-  syncTabButtonsUI();
-  els.view.classList.add('hidden');
-  els.dmVideoView.classList.remove('hidden');
-
-  if (alreadyOnFriends) {
-    await evalOnView(els.dmVideoView, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(false) : false');
-    const hud = await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.status() : null');
-    if (hud && hud.ok) applyHudUpdate(hud);
-    if (commentsOpen) ensureCommentsOpen(false);
-    return;
-  }
-
-  dmViewReady = false;
-  friendsUrlLoaded = true;
-  showLoading('Истории друзей', 'Загружаю ленту друзей и историй TikTok');
-  const friendsUrl = 'https://www.tiktok.com/friends?lang=ru';
-  try {
-    const p = els.dmVideoView.loadURL(friendsUrl);
-    if (p && typeof p.catch === 'function') p.catch(() => {});
-  } catch {
-    els.dmVideoView.src = friendsUrl;
-  }
-}
-
 async function handleOpenFriendStory(payload) {
   if (!payload || payload.isFriendsFeed) {
-    await openFriendsStoriesFeed();
+    await handleOpenDmVideo({
+      url: 'https://www.tiktok.com/friends?lang=ru',
+      chatName: 'Истории друзей',
+      rawTabLabel: true,
+      allowScroll: true
+    });
     return;
   }
   await handleOpenDmVideo({
     url: payload.url,
     chatName: payload.friendName ? 'История: ' + payload.friendName : 'История друга',
-    rawTabLabel: true
+    rawTabLabel: true,
+    allowScroll: false
   });
 }
 
@@ -594,22 +560,22 @@ async function handleOpenDmVideo(payload) {
       ? 'Чат: ' + payload.chatName
       : 'Чат';
   chatTabOpen = true;
-  dmViewMode = 'chat';
-  friendsUrlLoaded = false;
+  dmViewMode = payload.allowScroll ? 'friends' : 'chat';
+  friendsUrlLoaded = Boolean(payload.allowScroll);
   els.tabChatBtn.textContent = chatTabName;
-  els.tabChatWrap.classList.remove('hidden');
+  els.sourceTabs.classList.remove('hidden');
 
   // Ставим на паузу ленту рекомендаций (не теряем позицию!)
   if (ready) {
     evalOnView(els.view, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
   }
 
-  activeTab = 'chat';
+  activeTab = payload.allowScroll ? 'friends' : 'chat';
   syncTabButtonsUI();
   els.view.classList.add('hidden');
   els.dmVideoView.classList.remove('hidden');
   dmViewReady = false;
-  showLoading(chatTabName, payload.rawTabLabel ? 'Открываю историю друга' : 'Открываю ролик из сообщения');
+  showLoading(chatTabName, payload.rawTabLabel ? 'Открываю истории друзей' : 'Открываю ролик из сообщения');
 
   try {
     const p = els.dmVideoView.loadURL(payload.url);
@@ -620,16 +586,9 @@ async function handleOpenDmVideo(payload) {
 }
 
 async function switchSourceTab(nextTab) {
-  if (nextTab === activeTab) return;
-  if (nextTab === 'chat' && !chatTabOpen) return;
-  if (nextTab === 'friends') {
-    await openFriendsStoriesFeed();
-    return;
-  }
-  if (nextTab === 'chat' && dmViewMode !== 'chat' && lastChatVideoPayload) {
-    await handleOpenDmVideo(lastChatVideoPayload);
-    return;
-  }
+  const normalizedNext = nextTab === 'chat' && dmViewMode === 'friends' ? 'friends' : nextTab;
+  if (normalizedNext === activeTab) return;
+  if (normalizedNext !== 'feed' && !chatTabOpen) return;
 
   // Ставим на паузу уходящую вкладку
   if (activeTab === 'feed' && ready) {
@@ -638,7 +597,7 @@ async function switchSourceTab(nextTab) {
     await evalOnView(els.dmVideoView, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
   }
 
-  activeTab = nextTab;
+  activeTab = normalizedNext;
   syncTabButtonsUI();
   els.view.classList.toggle('hidden', activeTab !== 'feed');
   els.dmVideoView.classList.toggle('hidden', activeTab === 'feed');
@@ -654,7 +613,7 @@ async function switchSourceTab(nextTab) {
 async function closeChatTab() {
   chatTabOpen = false;
   lastChatVideoPayload = null;
-  els.tabChatWrap.classList.add('hidden');
+  els.sourceTabs.classList.add('hidden');
   if (dmViewReady) {
     await evalOnView(els.dmVideoView, 'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setPaused(true) : false');
   }
@@ -677,16 +636,10 @@ async function closeChatTab() {
 
 function syncTabButtonsUI() {
   const isFeed = activeTab === 'feed';
-  const isFriends = activeTab === 'friends';
-  const isChat = activeTab === 'chat';
   els.tabFeedBtn.classList.toggle('active', isFeed);
   els.tabFeedBtn.setAttribute('aria-selected', String(isFeed));
-  if (els.tabFriendsBtn) {
-    els.tabFriendsBtn.classList.toggle('active', isFriends);
-    els.tabFriendsBtn.setAttribute('aria-selected', String(isFriends));
-  }
-  els.tabChatWrap.classList.toggle('active', isChat);
-  els.tabChatWrap.setAttribute('aria-selected', String(isChat));
+  els.tabChatWrap.classList.toggle('active', !isFeed);
+  els.tabChatWrap.setAttribute('aria-selected', String(!isFeed));
 }
 
 /* ─── Webview и интеграция с TikTok ──────────────────────────────── */
@@ -993,6 +946,7 @@ function applyHudUpdate(hud) {
   const isReposted = Boolean(hud.reposted);
   els.hudRepostBtn.classList.toggle('reposted', isReposted);
   els.hudRepostBtn.setAttribute('aria-pressed', String(isReposted));
+  els.hudRepostBtn.title = isReposted ? 'Нажми, чтобы убрать репост' : 'Сделать репост';
   els.hudRepostLabel.textContent = isReposted ? 'В репостах' : 'Репост';
   els.hudRepostBadge.classList.toggle('hidden', !isReposted);
 
@@ -1593,48 +1547,18 @@ function bindGestures() {
     { passive: false }
   );
 
-  // Лайк в нижней панели: СТРОГО по 2 кликам
+  // Лайк в нижней панели: по обычному одиночному клику (поставить / убрать лайк)
   els.hudLikeBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    const now = Date.now();
-    if (now - gesture.lastLikeClickAt < 380) {
-      gesture.lastLikeClickAt = 0;
-      const stageRect = els.stage.getBoundingClientRect();
-      performDoubleClickLike(stageRect.width / 2, stageRect.height * 0.44);
-    } else {
-      gesture.lastLikeClickAt = now;
-      els.hudLikeBtn.classList.remove('nudge');
-      void els.hudLikeBtn.offsetWidth;
-      els.hudLikeBtn.classList.add('nudge');
-      toast('Лайк ставится двойным кликом');
-    }
+    const stageRect = els.stage.getBoundingClientRect();
+    performDoubleClickLike(stageRect.width / 2, stageRect.height * 0.44);
   });
 
-  // Репост в нижней панели: СТРОГО по удержанию
-  els.hudRepostBtn.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
+  // Репост в нижней панели: по обычному одиночному клику (сделать репост / убрать репост)
+  els.hudRepostBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    try { els.hudRepostBtn.setPointerCapture(e.pointerId); } catch {}
-    startHoldGesture(e, true);
+    performHoldRepost();
   });
-
-  const endRepostHold = (e) => {
-    e.stopPropagation();
-    try { els.hudRepostBtn.releasePointerCapture(e.pointerId); } catch {}
-    if (!gesture.down) return;
-    const heldMs = Date.now() - gesture.downAt;
-    const triggered = gesture.holdTriggered;
-    cancelHoldVisual();
-    gesture.down = false;
-    if (!triggered && heldMs < HOLD_COMPLETE_MS) {
-      els.hudRepostBtn.classList.remove('nudge');
-      void els.hudRepostBtn.offsetWidth;
-      els.hudRepostBtn.classList.add('nudge');
-      toast('Удерживай для репоста');
-    }
-  };
-  els.hudRepostBtn.addEventListener('pointerup', endRepostHold);
-  els.hudRepostBtn.addEventListener('pointercancel', endRepostHold);
 
   // Перемотка по полосе прогресса
   let scrubbing = false;
@@ -1822,7 +1746,8 @@ async function performDoubleClickLike(x, y) {
     }
 
     let res = null;
-    for (let i = 0; i < 9; i++) {
+    let triedFallback = false;
+    for (let i = 0; i < 10; i++) {
       await delay(150);
       res = await pageEval(
         'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.verifyLikeResult(' +
@@ -1831,6 +1756,10 @@ async function performDoubleClickLike(x, y) {
           JSON.stringify(prep.beforeCount || '') + ') : null'
       );
       if (res && (res.loginRequired || res.ok)) break;
+      if (i === 3 && !triedFallback) {
+        triedFallback = true;
+        await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.directLikeFallback() : false');
+      }
     }
 
     if (!res) {
@@ -1843,6 +1772,7 @@ async function performDoubleClickLike(x, y) {
     }
     if (res.ok) {
       const liked = Boolean(res.liked);
+      if (currentHud) currentHud.liked = liked;
       els.hudLikeBtn.classList.toggle('liked', liked);
       els.hudLikeBtn.setAttribute('aria-pressed', String(liked));
       els.hudLikedBadge.classList.toggle('hidden', !liked);
@@ -1888,24 +1818,32 @@ async function performHoldRepost() {
 
 async function performHoldRepostInner(isAborted) {
   let videoId = (currentHud && currentHud.videoId) || '';
+  const wasReposted = Boolean(currentHud && currentHud.reposted);
   let repostPrep = null;
 
-  // 1) Открываем скрытое меню «Поделиться» и кликаем реальную плитку «Репост»
-  const sharePrep = await trustedClickTarget('share');
-  if (sharePrep && sharePrep.ok) {
-    if (sharePrep.videoId) videoId = sharePrep.videoId;
-    let unavailableTicks = 0;
-    for (let i = 0; i < 10; i++) {
-      await delay(110);
-      if (isAborted()) return;
-      const attempt = await trustedClickTarget('repost');
-      if (attempt && attempt.ok) {
-        repostPrep = attempt;
-        break;
-      }
-      if (attempt && attempt.dialogHasShareActions) {
-        unavailableTicks++;
-        if (unavailableTicks >= 3) break;
+  // 1) Если у ролика есть прямая кнопка репоста в панели действий — кликаем её сразу
+  const directAttempt = await trustedClickTarget('repost-direct');
+  if (directAttempt && directAttempt.ok) {
+    repostPrep = directAttempt;
+    if (directAttempt.videoId) videoId = directAttempt.videoId;
+  } else {
+    // 2) Открываем скрытое меню «Поделиться» и кликаем плитку «Репост» / «Удалить репост»
+    const sharePrep = await trustedClickTarget('share');
+    if (sharePrep && sharePrep.ok) {
+      if (sharePrep.videoId) videoId = sharePrep.videoId;
+      let unavailableTicks = 0;
+      for (let i = 0; i < 10; i++) {
+        await delay(110);
+        if (isAborted()) return;
+        const attempt = await trustedClickTarget('repost', { wasReposted });
+        if (attempt && attempt.ok) {
+          repostPrep = attempt;
+          break;
+        }
+        if (attempt && attempt.dialogHasShareActions) {
+          unavailableTicks++;
+          if (unavailableTicks >= 3) break;
+        }
       }
     }
   }
@@ -1916,14 +1854,16 @@ async function performHoldRepostInner(isAborted) {
     return;
   }
 
-  // 2) Опрашиваем реальное подтверждение (API /upvote/(create|delete), тост TikTok или смена подписи)
+  const effectiveWillRemove = Boolean(repostPrep.willRemove || wasReposted);
+
+  // 3) Опрашиваем реальное подтверждение (API /upvote/(create|delete), тост TikTok или смена подписи)
   for (let i = 0; i < 8; i++) {
     await delay(140);
     if (isAborted()) return;
     const prog = await pageEval(
       'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.checkRepostProgress(' +
         JSON.stringify(videoId) + ',' +
-        Boolean(repostPrep.willRemove) + ') : null'
+        effectiveWillRemove + ') : null'
     );
     if (prog && prog.done) break;
   }
@@ -1931,7 +1871,8 @@ async function performHoldRepostInner(isAborted) {
   const res = await pageEval(
     'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.finishRepost(' +
       JSON.stringify(videoId) + ',' +
-      Boolean(repostPrep.willRemove) + ') : null'
+      effectiveWillRemove + ',' +
+      Boolean(repostPrep.inModal) + ') : null'
   );
 
   if (!res) {
@@ -1947,8 +1888,10 @@ async function performHoldRepostInner(isAborted) {
     const reposted = Boolean(res.reposted);
     const stillSame = !currentHud || !currentHud.videoId || currentHud.videoId === videoId;
     if (stillSame) {
+      if (currentHud) currentHud.reposted = reposted;
       els.hudRepostBtn.classList.toggle('reposted', reposted);
       els.hudRepostBtn.setAttribute('aria-pressed', String(reposted));
+      els.hudRepostBtn.title = reposted ? 'Нажми, чтобы убрать репост' : 'Сделать репост';
       els.hudRepostLabel.textContent = reposted ? 'В репостах' : 'Репост';
       els.hudRepostBadge.classList.toggle('hidden', !reposted);
     }

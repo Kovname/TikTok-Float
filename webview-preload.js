@@ -165,13 +165,18 @@ const EARLY_NET_TAP = `(() => {
     try { repostPath = new URL(url, location.href).pathname; } catch { repostPath = url.split('?')[0]; }
     if (
       /(?:upvote|repost)/i.test(repostPath) &&
-      /\/(?:create|delete|remove|cancel|commit|add|del)(?:\/|$)/i.test(repostPath)
+      (/\/(?:create|delete|remove|cancel|commit|add|del)(?:\/|$)/i.test(repostPath) ||
+        /[?&](?:action_type|type)=/i.test(url))
     ) {
       const awemeMatch = url.match(/[?&](?:item_id|aweme_id)=([^&]+)/);
       const awemeId =
         (awemeMatch ? decodeURIComponent(awemeMatch[1]) : '') ||
         String(data.item_id || data.aweme_id || '');
-      const isRemove = /delete|remove|cancel/i.test(url);
+      const isRemove =
+        /delete|remove|cancel|\/del(?:\/|$)/i.test(repostPath) ||
+        /[?&](?:action_type=(?:2|0)|type=0)/i.test(url) ||
+        data.upvote_status === 0 ||
+        data.is_reposted === false;
       store.lastRepost = {
         at: Date.now(),
         statusCode: Number(data.status_code ?? data.statusCode ?? (data.ok === false ? -1 : 0)),

@@ -432,15 +432,15 @@ function renderStoriesBar() {
     return;
   }
 
+  // Показываем ТОЛЬКО реальные истории из snapshot.stories — никогда не присваиваем истории случайным чатам!
   const rawStories = Array.isArray(snapshot.stories) ? snapshot.stories : [];
-  const convs = Array.isArray(snapshot.conversations) ? snapshot.conversations : [];
 
   const merged = [];
   const seen = new Set();
-  const pushStory = (item) => {
-    if (!item || !item.name) return;
+  for (const item of rawStories) {
+    if (!item || !item.name) continue;
     const key = String(item.id || item.handle || item.name).trim().toLowerCase();
-    if (!key || seen.has(key)) return;
+    if (!key || seen.has(key)) continue;
     seen.add(key);
     merged.push({
       id: key,
@@ -448,26 +448,12 @@ function renderStoriesBar() {
       handle: String(item.handle || '').replace(/^@/, '').trim(),
       avatar: String(item.avatar || ''),
       url: String(item.url || ''),
-      hasStory: Boolean(item.hasStory || item.hasActiveRing)
-    });
-  };
-
-  for (const s of rawStories) pushStory(s);
-  for (const c of convs) {
-    if (merged.length >= 14) break;
-    const hasStoryHint = /(истори|story)/i.test(String(c.lastMessage || ''));
-    pushStory({
-      id: c.id,
-      name: c.name,
-      handle: c.handle,
-      avatar: c.avatar,
-      url: c.handle ? 'https://www.tiktok.com/@' + c.handle : '',
-      hasStory: hasStoryHint
+      hasStory: true
     });
   }
 
   const sig = merged
-    .map((s) => s.id + '|' + s.name + '|' + (s.hasStory ? '1' : '0') + '|' + s.avatar)
+    .map((s) => s.id + '|' + s.name + '|' + s.avatar)
     .join('\n');
   els.storiesBar.classList.remove('hidden');
   if (sig === lastStoriesSig && els.storiesBar.childElementCount > 0) return;
@@ -857,6 +843,7 @@ function renderMessages() {
         const ok = await window.messagesApi.openVideoInPlayer({
           url: m.video.url,
           domIndex: m.video.domIndex,
+          needsClickResolve: Boolean(m.video.needsClickResolve),
           chatName: selectedChat ? selectedChat.name : 'Чат'
         });
         if (!ok) {
