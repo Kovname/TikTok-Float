@@ -1,0 +1,2420 @@
+:root {
+  color-scheme: dark;
+  --canvas: #0c0c0e;
+  --surface: #141417;
+  --surface-raised: #1e1e23;
+  --glass: rgba(20, 20, 24, 0.76);
+  --glass-strong: rgba(22, 22, 26, 0.92);
+  --glass-hover: rgba(38, 38, 44, 0.84);
+  --hairline: rgba(255, 255, 255, 0.1);
+  --hairline-soft: rgba(255, 255, 255, 0.07);
+  --refract: inset 0 1px 0 rgba(255, 255, 255, 0.09);
+  --text-primary: #f4f4f6;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #ff2d55;
+  --accent-hover: #ff476a;
+  --accent-tint: rgba(255, 45, 85, 0.22);
+  --positive: #30d158;
+  --warning: #f5b942;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --radius-bezel: 28px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: var(--text-primary);
+  font-family: "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ─── Прозрачная рамка и зоны плавного изменения размера ─────────── */
+
+#shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+}
+
+.resize-zone {
+  position: fixed;
+  z-index: 90;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.resize-n { top: 0; left: 22px; right: 22px; height: 10px; cursor: ns-resize; }
+.resize-s { bottom: 0; left: 22px; right: 22px; height: 10px; cursor: ns-resize; }
+.resize-w { top: 22px; bottom: 22px; left: 0; width: 10px; cursor: ew-resize; }
+.resize-e { top: 22px; bottom: 22px; right: 0; width: 10px; cursor: ew-resize; }
+.resize-nw { top: 0; left: 0; width: 24px; height: 24px; cursor: nwse-resize; }
+.resize-ne { top: 0; right: 0; width: 24px; height: 24px; cursor: nesw-resize; }
+.resize-sw { bottom: 0; left: 0; width: 24px; height: 24px; cursor: nesw-resize; }
+.resize-se { bottom: 0; right: 0; width: 24px; height: 24px; cursor: nwse-resize; }
+
+/* ─── Корпус плавающего окна в стиле iPhone PiP ──────────────────── */
+
+#bezel {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-bezel);
+  overflow: hidden;
+  clip-path: inset(0 round var(--radius-bezel));
+  isolation: isolate;
+  background: var(--canvas);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.44),
+    var(--refract);
+  transition: border-color 180ms var(--ease);
+}
+
+#bezel.resizing {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: calc(var(--radius-bezel) - 1px);
+  overflow: hidden;
+  background: var(--canvas);
+}
+
+#view,
+#dmVideoView {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: calc(var(--radius-bezel) - 1px);
+  background: var(--canvas);
+}
+
+/* ─── Слой жестов поверх видео ────────────────────────────────────── */
+
+#gestureLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  cursor: pointer;
+}
+
+#gestureLayer.passthrough {
+  pointer-events: none;
+}
+
+/* ─── Анимация двойного клика (лайк) ──────────────────────────────── */
+
+#heartLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.burst-heart {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  margin-left: -36px;
+  margin-top: -36px;
+  color: var(--accent);
+  opacity: 0;
+  transform: scale(0.35) rotate(var(--rot, -8deg));
+  animation: heartPop 680ms var(--ease) forwards;
+}
+
+.burst-heart.unliked {
+  color: rgba(244, 244, 246, 0.78);
+}
+
+@keyframes heartPop {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.35) rotate(var(--rot, -8deg));
+  }
+  26% {
+    opacity: 0.96;
+    transform: translateY(-4px) scale(1.08) rotate(var(--rot, -8deg));
+  }
+  58% {
+    opacity: 0.92;
+    transform: translateY(-16px) scale(0.98) rotate(var(--rot, -8deg));
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-44px) scale(1.16) rotate(var(--rot, -8deg));
+  }
+}
+
+/* ─── Индикатор удержания (репост) ────────────────────────────────── */
+
+.hold-ring {
+  position: absolute;
+  z-index: 14;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.86);
+  transition: opacity 150ms var(--ease), transform 180ms var(--ease);
+}
+
+.hold-ring.active {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.hold-ring.completed {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(1.14);
+  transition: opacity 220ms var(--ease), transform 220ms var(--ease);
+}
+
+.hold-ring-badge {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(18, 18, 22, 0.84);
+  backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: var(--refract);
+}
+
+.hold-ring-svg {
+  position: absolute;
+  inset: 0;
+  width: 64px;
+  height: 64px;
+  transform: rotate(-90deg);
+}
+
+.hold-ring-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.14);
+  stroke-width: 3;
+}
+
+.hold-ring-progress {
+  fill: none;
+  stroke: var(--positive);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 169.65;
+  stroke-dashoffset: 169.65;
+}
+
+.hold-ring-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--text-primary);
+}
+
+.hold-ring-label {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* ─── Центральный знак паузы / воспроизведения ────────────────────── */
+
+.center-glyph {
+  position: absolute;
+  z-index: 11;
+  top: 50%;
+  left: 50%;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(18, 18, 22, 0.72);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.84);
+  transition: opacity 220ms var(--ease), transform 220ms var(--ease);
+}
+
+.center-glyph svg {
+  width: 22px;
+  height: 22px;
+}
+
+.center-glyph.visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+/* ─── Верхний плавающий слой iOS (вместо заголовка Windows) ────────── */
+
+#topChrome {
+  position: absolute;
+  z-index: 15;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 14px 0;
+  pointer-events: none;
+}
+
+.top-scrim {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 88px;
+  background: linear-gradient(180deg, rgba(10, 10, 12, 0.68) 0%, rgba(10, 10, 12, 0) 100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms var(--ease);
+}
+
+#bezel:hover .top-scrim,
+#bezel.chrome-open .top-scrim {
+  opacity: 1;
+}
+
+.top-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+}
+
+.top-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 200ms var(--ease), transform 200ms var(--ease);
+}
+
+#bezel:hover .top-group,
+#bezel.chrome-open .top-group,
+#bezel.force-top .top-group {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.glass-circle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--text-primary);
+  background: var(--glass);
+  backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--refract);
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.unread-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1.5px solid #141418;
+}
+
+.glass-circle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.glass-circle:hover {
+  background: var(--glass-hover);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.glass-circle:active {
+  transform: scale(0.94);
+}
+
+.glass-circle.active {
+  color: #ffffff;
+  background: rgba(244, 244, 246, 0.22);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.close-circle:hover {
+  color: #fecdd3;
+  background: rgba(244, 63, 94, 0.28);
+  border-color: rgba(244, 63, 94, 0.42);
+}
+
+/* iOS Dynamic Pill (перетаскивание + живой статус, без обрезки текста в покое) */
+.drag-pill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 52px;
+  max-width: calc(100% - 32px);
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0.44);
+  backdrop-filter: blur(18px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  pointer-events: auto;
+  overflow: hidden;
+  -webkit-app-region: drag;
+  app-region: drag;
+  transition: background-color 200ms var(--ease), border-color 200ms var(--ease), opacity 200ms var(--ease);
+}
+
+#bezel:hover .drag-pill,
+#bezel.chrome-open .drag-pill,
+#bezel.force-top .drag-pill {
+  max-width: calc(100% - 216px);
+  background: var(--glass);
+  border-color: var(--hairline);
+}
+
+.drag-pill.has-badge {
+  background: rgba(18, 18, 22, 0.72);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.grabber-bar {
+  width: 28px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  flex: 0 0 auto;
+}
+
+.pill-meta {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.drag-pill.has-badge .grabber-bar {
+  display: none;
+}
+
+.drag-pill.has-badge .pill-meta {
+  display: inline-flex;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.status-dot.online { background: var(--positive); }
+.status-dot.loading { background: var(--warning); }
+.status-dot.auto { background: var(--accent); }
+.status-dot.error { background: var(--accent); }
+
+/* Баннер режима входа / капчи */
+.mode-banner {
+  margin: 10px auto 0;
+  width: fit-content;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 999px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(22px);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--refract);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  pointer-events: auto;
+}
+
+.mode-done-btn {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--text-primary);
+  color: #111113;
+  font-size: 11.5px;
+  font-weight: 600;
+  transition: opacity 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.mode-done-btn:hover { opacity: 0.9; }
+.mode-done-btn:active { transform: scale(0.96); }
+
+/* Вкладки источника видео: «Рекомендации» / «Чат: Имя ×» */
+.source-tabs {
+  margin: 8px auto 0;
+  width: fit-content;
+  max-width: calc(100% - 12px);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0.84);
+  backdrop-filter: blur(22px) saturate(160%);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--refract);
+  pointer-events: auto;
+}
+
+.source-tab,
+.source-tab-chat {
+  height: 26px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  transition: background-color 150ms var(--ease), color 150ms var(--ease);
+}
+
+.source-tab {
+  padding: 0 11px;
+}
+
+.source-tab:hover,
+.source-tab-chat:hover {
+  color: var(--text-primary);
+}
+
+.source-tab.active,
+.source-tab-chat.active {
+  background: var(--text-primary);
+  color: #111113;
+  font-weight: 600;
+}
+
+.source-tab-chat {
+  padding: 0 4px 0 10px;
+  gap: 4px;
+  max-width: 168px;
+}
+
+.source-tab-label {
+  max-width: 126px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+  font-weight: inherit;
+}
+
+.source-tab-close {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: inherit;
+  opacity: 0.7;
+  transition: opacity 120ms var(--ease), background-color 120ms var(--ease);
+}
+
+.source-tab-close svg {
+  width: 11px;
+  height: 11px;
+}
+
+.source-tab-close:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.14);
+}
+
+/* ─── Кастомный iOS HUD поверх видео ──────────────────────────────── */
+
+.video-hud {
+  position: absolute;
+  z-index: 6;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 0 14px 18px 16px;
+  pointer-events: none;
+  transition: opacity 220ms var(--ease);
+}
+
+#bezel.hud-hidden .video-hud {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.bottom-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 200px;
+  background: linear-gradient(
+    0deg,
+    rgba(10, 10, 12, 0.78) 0%,
+    rgba(10, 10, 12, 0.34) 48%,
+    rgba(10, 10, 12, 0) 100%
+  );
+  pointer-events: none;
+}
+
+.hud-layout {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  transition: transform 240ms var(--ease);
+}
+
+/* Плавно приподнимаем подпись автора над двухстрочной нижней панелью */
+#bezel:hover .hud-layout,
+#bezel.chrome-open .hud-layout {
+  transform: translateY(-102px);
+}
+
+#bezel.settings-open .video-hud,
+#bezel.settings-open .control-dock,
+#bezel.share-open .video-hud,
+#bezel.share-open .control-dock {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.hud-info {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-author {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hud-avatar-wrap {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  display: grid;
+  place-items: center;
+}
+
+.hud-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.hud-avatar-fallback {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.hud-handle {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+/* Мини-индикаторы активного лайка/репоста рядом с именем (в покое не мешают видео) */
+.hud-status-badge {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  backdrop-filter: blur(12px);
+}
+
+.hud-status-badge svg {
+  width: 11px;
+  height: 11px;
+}
+
+.hud-status-badge.is-liked {
+  background: rgba(255, 45, 85, 0.24);
+  border: 1px solid rgba(255, 45, 85, 0.52);
+  color: var(--accent);
+}
+
+.hud-status-badge.is-reposted {
+  background: rgba(48, 209, 88, 0.22);
+  border: 1px solid rgba(48, 209, 88, 0.5);
+  color: var(--positive);
+}
+
+.hud-desc {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.38;
+  color: rgba(244, 244, 246, 0.88);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  pointer-events: auto;
+  cursor: pointer;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.hud-desc:empty {
+  display: none;
+}
+
+.hud-desc.expanded {
+  -webkit-line-clamp: 6;
+}
+
+.hud-music {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  color: rgba(244, 244, 246, 0.72);
+  font-size: 11.5px;
+}
+
+.hud-music svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.hud-music span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Правый столбик действий iOS (Лайк 2 клика / Комменты / Отправить / Репост удержание) */
+.hud-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  pointer-events: auto;
+}
+
+.rail-btn {
+  min-width: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-primary);
+  transition: transform 130ms var(--ease);
+}
+
+.rail-btn:active {
+  transform: scale(0.94);
+}
+
+.rail-circle {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(16, 16, 20, 0.62);
+  backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: var(--refract);
+  transition: background-color 160ms var(--ease), border-color 160ms var(--ease), color 160ms var(--ease), transform 180ms var(--ease);
+}
+
+.rail-circle svg {
+  width: 21px;
+  height: 21px;
+  transition: transform 200ms var(--ease);
+}
+
+.rail-btn:hover .rail-circle {
+  background: rgba(34, 34, 42, 0.84);
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+/* Однозначно читаемый активный лайк: ярко-розовое залитое сердце и подсвеченная подпись */
+.rail-btn.liked .rail-circle {
+  color: var(--accent);
+  background: rgba(255, 45, 85, 0.26);
+  border-color: rgba(255, 77, 109, 0.7);
+}
+
+.rail-btn.liked .heart-svg {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.rail-btn.liked .rail-count {
+  color: #ff6b86;
+  font-weight: 600;
+}
+
+.rail-btn.like-pop .heart-svg {
+  animation: likePop 340ms var(--ease);
+}
+
+@keyframes likePop {
+  0% { transform: scale(0.76); }
+  48% { transform: scale(1.24); }
+  100% { transform: scale(1); }
+}
+
+/* Активный репост: насыщённый зелёный iOS-значок */
+.rail-btn.reposted .rail-circle {
+  color: #0b1f12;
+  background: var(--positive);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.rail-btn.reposted .rail-count {
+  color: #5ee384;
+  font-weight: 600;
+}
+
+/* Активные комментарии: контрастный белый круг */
+.rail-btn.open .rail-circle {
+  color: #111113;
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+.rail-btn.open .comment-svg {
+  fill: #111113;
+  stroke: #111113;
+}
+
+.rail-btn.open .comment-svg circle {
+  fill: #ffffff;
+}
+
+.rail-btn.nudge {
+  animation: nudge 300ms var(--ease);
+}
+
+@keyframes nudge {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  65% { transform: translateX(3px); }
+}
+
+.rail-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(244, 244, 246, 0.9);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+/* ─── Нижняя двухъярусная плавающая iOS-панель (реакции + плеер) ─── */
+
+.control-dock {
+  position: absolute;
+  z-index: 15;
+  left: 12px;
+  right: 12px;
+  bottom: 14px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-radius: 22px;
+  background: rgba(18, 18, 22, 0.86);
+  backdrop-filter: blur(26px) saturate(165%);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow:
+    0 12px 30px rgba(0, 0, 0, 0.46),
+    var(--refract);
+  opacity: 0;
+  transform: translateY(10px);
+  pointer-events: none;
+  transition: opacity 210ms var(--ease), transform 240ms var(--ease);
+}
+
+#bezel:hover .control-dock,
+#bezel.chrome-open .control-dock {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.dock-engage-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.engage-pill {
+  height: 30px;
+  padding: 0 6px;
+  border-radius: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid transparent;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.engage-pill svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  display: block;
+}
+
+.engage-count,
+.engage-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.engage-pill:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.engage-pill:active {
+  transform: scale(0.95);
+}
+
+/* Активный лайк в нижней панели */
+.engage-pill.liked {
+  color: #ff6b86;
+  background: rgba(255, 45, 85, 0.22);
+  border-color: rgba(255, 77, 109, 0.55);
+  font-weight: 600;
+}
+
+.engage-pill.liked .heart-svg {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.engage-pill.like-pop .heart-svg {
+  animation: likePop 340ms var(--ease);
+}
+
+/* Активные комментарии */
+.engage-pill.open {
+  color: #111113;
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  font-weight: 600;
+}
+
+.engage-pill.open .comment-svg {
+  fill: #111113;
+  stroke: #111113;
+}
+
+/* Активный репост */
+.engage-pill.reposted {
+  color: #0b1f12;
+  background: var(--positive);
+  border-color: rgba(255, 255, 255, 0.25);
+  font-weight: 600;
+}
+
+.engage-pill.nudge {
+  animation: nudge 300ms var(--ease);
+}
+
+.dock-play-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.dock-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.dock-left {
+  justify-self: start;
+}
+
+.dock-center {
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dock-right {
+  justify-self: end;
+}
+
+.dock-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 50%;
+  color: var(--text-primary);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.dock-btn svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+.dock-btn .icon {
+  display: grid;
+  place-items: center;
+}
+
+.dock-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.dock-btn:active {
+  transform: scale(0.92);
+}
+
+.dock-btn.active {
+  color: #111113;
+  background: var(--text-primary);
+}
+
+/* Всплывающий iOS-регулятор громкости над кнопкой звука */
+.volume-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.volume-popover {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 12px);
+  width: 40px;
+  padding: 8px 0 10px;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  background: #141418;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow:
+    0 12px 28px rgba(0, 0, 0, 0.56),
+    var(--refract);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(6px) scale(0.96);
+  transition: opacity 160ms var(--ease), transform 180ms var(--ease), visibility 0s linear 180ms;
+  z-index: 30;
+}
+
+/* Невидимый мостик для плавного переноса курсора с иконки звука на ползунок */
+.volume-popover::after {
+  content: "";
+  position: absolute;
+  left: -6px;
+  right: -6px;
+  top: 100%;
+  height: 16px;
+}
+
+.volume-control:hover .volume-popover,
+.volume-control:focus-within .volume-popover,
+.volume-control.dragging .volume-popover {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0) scale(1);
+  transition: opacity 160ms var(--ease), transform 180ms var(--ease), visibility 0s linear 0s;
+}
+
+.volume-pct {
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(244, 244, 246, 0.86);
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+.volume-track {
+  position: relative;
+  width: 28px;
+  height: 92px;
+  display: flex;
+  justify-content: center;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+}
+
+.volume-rail {
+  position: relative;
+  width: 5px;
+  height: 100%;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.volume-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--text-primary);
+  transition: background-color 140ms var(--ease);
+}
+
+.volume-thumb {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% - 6.5px);
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
+  pointer-events: none;
+  transition: transform 130ms var(--ease);
+}
+
+.volume-track:hover .volume-thumb,
+.volume-control.dragging .volume-thumb {
+  transform: translateX(-50%) scale(1.14);
+}
+
+.volume-control.is-muted .volume-fill {
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.volume-control.is-muted .volume-pct {
+  color: var(--text-muted);
+}
+
+.dock-play {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  color: #111113;
+  background: var(--text-primary);
+}
+
+.dock-play svg {
+  width: 18px;
+  height: 18px;
+}
+
+.dock-play:hover {
+  background: #ffffff;
+}
+
+.dock-speed {
+  height: 32px;
+  min-width: 40px;
+  padding: 0 10px;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color 150ms var(--ease), border-color 150ms var(--ease), color 150ms var(--ease), transform 120ms var(--ease);
+}
+
+.dock-speed:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.dock-speed:active {
+  transform: scale(0.94);
+}
+
+.dock-speed.active {
+  color: #111113;
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+.dock-auto {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color 150ms var(--ease), border-color 150ms var(--ease), color 150ms var(--ease), transform 120ms var(--ease);
+}
+
+.dock-auto svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  display: block;
+}
+
+.dock-auto:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.dock-auto:active {
+  transform: scale(0.95);
+}
+
+.dock-auto.active {
+  color: #ffffff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ─── Тонкая полоса прогресса видео ──────────────────────────────── */
+
+.scrubber {
+  position: absolute;
+  z-index: 16;
+  left: 24px;
+  right: 24px;
+  bottom: 2px;
+  height: 12px;
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 3px;
+  cursor: pointer;
+}
+
+.scrubber-track {
+  width: 100%;
+  height: 2.5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  overflow: hidden;
+  transition: transform 150ms var(--ease);
+  transform-origin: bottom;
+}
+
+.scrubber:hover .scrubber-track {
+  transform: scaleY(1.8);
+}
+
+.scrubber-fill {
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.88);
+  transform: scaleX(0);
+  transform-origin: left;
+}
+
+/* ─── Всплывающий iOS-лист настроек ──────────────────────────────── */
+
+.settings-sheet {
+  position: absolute;
+  z-index: 30;
+  top: 52px;
+  right: 12px;
+  width: calc(100% - 24px);
+  max-width: 288px;
+  max-height: calc(100% - 68px);
+  overflow-y: auto;
+  border-radius: 20px;
+  background: rgba(20, 20, 24, 0.96);
+  backdrop-filter: blur(28px) saturate(160%);
+  border: 1px solid var(--hairline);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.56),
+    var(--refract);
+  transform-origin: top right;
+  animation: sheetIn 180ms var(--ease);
+}
+
+.settings-sheet::-webkit-scrollbar {
+  width: 0;
+}
+
+@keyframes sheetIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.sheet-section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--hairline-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sheet-section:last-child {
+  border-bottom: 0;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sheet-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.sheet-meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.sheet-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.seg-btn {
+  height: 28px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
+}
+
+.seg-btn.active {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.chip-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.chip-grid.four-col {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.chip-grid.five-col {
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+
+.chip-grid.five-col .chip-btn {
+  padding: 0 4px;
+  font-size: 11.5px;
+}
+
+.chip-btn {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  font-variant-numeric: tabular-nums;
+  transition: background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.chip-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.chip-btn:active {
+  transform: scale(0.97);
+}
+
+.chip-btn.active {
+  color: #111113;
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
+.ios-slider {
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.ios-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.ios-slider::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.sheet-row-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.stepper-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  color: var(--text-primary);
+  transition: background-color 140ms var(--ease);
+}
+
+.stepper-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.stepper-val {
+  min-width: 42px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.sheet-actions {
+  padding: 8px;
+  gap: 2px;
+}
+
+.sheet-action-btn {
+  height: 36px;
+  padding: 0 10px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: left;
+  transition: background-color 140ms var(--ease);
+}
+
+.sheet-action-btn svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-secondary);
+  flex: 0 0 16px;
+}
+
+.sheet-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sheet-action-btn.active {
+  color: #fda4af;
+  background: var(--accent-tint);
+}
+
+.sheet-action-btn.active svg {
+  color: #fda4af;
+}
+
+/* ─── Уголки-подсказки масштабирования ────────────────────────────── */
+
+.corner-cue {
+  position: absolute;
+  z-index: 18;
+  width: 18px;
+  height: 18px;
+  color: rgba(255, 255, 255, 0.42);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms var(--ease);
+}
+
+.corner-cue-se { right: 5px; bottom: 5px; }
+.corner-cue-sw { left: 5px; bottom: 5px; }
+
+#bezel:hover .corner-cue,
+#bezel.resizing .corner-cue {
+  opacity: 1;
+}
+
+/* ─── Нижний iOS-лист «Отправить контактам» ──────────────────────── */
+
+.share-sheet {
+  position: absolute;
+  z-index: 32;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 76%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 22px 22px 0 0;
+  background: rgba(20, 20, 24, 0.97);
+  backdrop-filter: blur(28px) saturate(160%);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 -12px 36px rgba(0, 0, 0, 0.56),
+    var(--refract);
+  animation: shareSheetIn 200ms var(--ease);
+}
+
+@keyframes shareSheetIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.share-grabber {
+  width: 36px;
+  height: 4px;
+  margin: 10px auto 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.24);
+  flex: 0 0 auto;
+}
+
+.share-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 16px 10px;
+  flex: 0 0 auto;
+}
+
+.share-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.share-close-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.07);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
+}
+
+.share-close-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.share-close-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.share-search-wrap {
+  position: relative;
+  margin: 0 16px 10px;
+  flex: 0 0 auto;
+}
+
+.share-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.share-search-input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px 0 36px;
+  border-radius: 12px;
+  border: 1px solid var(--hairline-soft);
+  background: #1b1b20;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  user-select: text;
+  transition: border-color 140ms var(--ease), background-color 140ms var(--ease);
+}
+
+.share-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.share-search-input:focus {
+  background: #202026;
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.share-contacts-body {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow-y: auto;
+  padding: 0 12px 8px;
+}
+
+.share-contacts-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.share-contacts-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.share-contacts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.share-contact-row {
+  width: 100%;
+  padding: 8px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  transition: background-color 140ms var(--ease);
+}
+
+.share-contact-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.share-contact-row.selected {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.share-ava {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #27272e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.share-ava img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.share-contact-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.share-contact-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-contact-sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-check {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  display: grid;
+  place-items: center;
+  color: transparent;
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+}
+
+.share-contact-row.selected .share-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.share-check svg {
+  width: 13px;
+  height: 13px;
+}
+
+.share-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px;
+}
+
+.share-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.share-skel-ava {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #232329;
+  flex: 0 0 36px;
+}
+
+.share-skel-line {
+  height: 11px;
+  border-radius: 999px;
+  background: #232329;
+}
+
+.share-empty {
+  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+
+.share-empty-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.share-footer {
+  flex: 0 0 auto;
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--hairline-soft);
+  background: rgba(16, 16, 20, 0.94);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.share-note-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-note-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 18px;
+  border: 1px solid var(--hairline);
+  background: #1b1b20;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  user-select: text;
+}
+
+.share-note-input::placeholder {
+  color: var(--text-muted);
+}
+
+.share-note-input:focus {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.share-send-btn {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 18px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: opacity 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.share-send-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.share-send-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.share-send-btn:disabled {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.share-quick-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.share-quick-btn {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--hairline-soft);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease);
+}
+
+.share-quick-btn svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.share-quick-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+/* ─── Первый запуск: карточка входа по QR-коду ────────────────────── */
+
+.qr-welcome {
+  position: absolute;
+  z-index: 28;
+  inset: 0;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 10, 13, 0.74);
+  backdrop-filter: blur(18px);
+  animation: sheetIn 220ms var(--ease);
+}
+
+.qr-card {
+  width: 100%;
+  max-width: 296px;
+  padding: 24px 20px 20px;
+  border-radius: 22px;
+  background: rgba(22, 22, 27, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 20px 44px rgba(0, 0, 0, 0.56),
+    var(--refract);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+}
+
+.qr-app-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.qr-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.qr-sub {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.48;
+  color: var(--text-secondary);
+}
+
+.qr-actions {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.qr-actions .primary-btn,
+.qr-actions .ghost-btn {
+  width: 100%;
+  height: 38px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+/* ─── Скелетная загрузка и экран ошибки ──────────────────────────── */
+
+.overlay {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--canvas);
+  opacity: 1;
+  transition: opacity 260ms var(--ease);
+}
+
+.loading-skeleton {
+  position: absolute;
+  inset: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.skel-stage {
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  background: #131316;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.skel-bottom {
+  position: relative;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skel-author {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skel-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #222227;
+}
+
+.skel-line {
+  height: 10px;
+  border-radius: 999px;
+  background: #222227;
+}
+
+.skel-line.w-40 { width: 40%; }
+.skel-line.w-55 { width: 55%; }
+.skel-line.w-75 { width: 75%; }
+
+.shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+.loading-caption {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: rgba(20, 20, 24, 0.88);
+  border: 1px solid var(--hairline);
+}
+
+.error-card {
+  width: calc(100% - 40px);
+  max-width: 280px;
+  padding: 20px;
+  border-radius: 20px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.error-glyph {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.error-glyph svg {
+  width: 20px;
+  height: 20px;
+}
+
+.overlay-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.overlay-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.error-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  width: 100%;
+}
+
+.primary-btn,
+.ghost-btn {
+  flex: 1 1 auto;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 140ms var(--ease), opacity 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.primary-btn {
+  color: #111113;
+  background: var(--text-primary);
+}
+
+.primary-btn:hover { opacity: 0.92; }
+.primary-btn:active { transform: scale(0.98); }
+
+.ghost-btn {
+  color: var(--text-primary);
+  background: var(--surface-raised);
+  border: 1px solid var(--hairline);
+}
+
+.ghost-btn:hover { background: #26262c; }
+.ghost-btn:active { transform: scale(0.98); }
+
+/* ─── Тост-капсула ────────────────────────────────────────────────── */
+
+.toast {
+  position: absolute;
+  z-index: 40;
+  top: 52px;
+  left: 50%;
+  max-width: calc(100% - 28px);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--glass-strong);
+  backdrop-filter: blur(22px);
+  border: 1px solid var(--hairline);
+  box-shadow: var(--refract);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 180ms var(--ease), transform 200ms var(--ease);
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ─── Адаптация для мини-размера ─────────────────────────────────── */
+
+body.compact-mode .glass-circle {
+  width: 28px;
+  height: 28px;
+}
+
+body.compact-mode .glass-circle svg {
+  width: 14px;
+  height: 14px;
+}
+
+body.compact-mode .top-group {
+  gap: 4px;
+}
+
+body.compact-mode #sizeBtn {
+  display: none;
+}
+
+body.compact-mode .hud-rail {
+  gap: 8px;
+}
+
+body.compact-mode .drag-pill {
+  min-width: 34px;
+  height: 22px;
+  max-width: calc(100% - 196px);
+  padding: 0 7px;
+}
+
+body.compact-mode .grabber-bar {
+  width: 20px;
+}
+
+body.compact-mode .hud-desc,
+body.compact-mode .hud-music {
+  display: none;
+}
+
+body.compact-mode .rail-circle {
+  width: 34px;
+  height: 34px;
+}
+
+body.compact-mode .rail-circle svg {
+  width: 16px;
+  height: 16px;
+}
+
+body.compact-mode .dock-auto span,
+body.compact-mode .engage-label {
+  display: none;
+}
+
+body.compact-mode .control-dock {
+  left: 10px;
+  right: 10px;
+  padding: 5px 6px;
+  gap: 5px;
+  border-radius: 20px;
+}
+
+body.compact-mode .engage-pill {
+  height: 28px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+body.compact-mode .dock-side {
+  gap: 4px;
+}
+
+body.compact-mode .dock-center {
+  gap: 2px;
+}
+
+body.compact-mode .dock-btn {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+}
+
+body.compact-mode .dock-play {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+}
+
+body.compact-mode .dock-auto {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+body.compact-mode .dock-speed {
+  min-width: 32px;
+  height: 28px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(244, 244, 246, 0.72);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.share-comment-banner {
+  margin: 0 12px 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(244, 63, 94, 0.14);
+  border: 1px solid rgba(244, 63, 94, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.share-comment-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.share-comment-author {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fda4af;
+}
+
+.share-comment-text {
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-comment-clear {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.share-comment-clear:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--text-primary);
+}

@@ -1,0 +1,1168 @@
+:root {
+  color-scheme: dark;
+  --surface: #141418;
+  --surface-raised: #1e1e23;
+  --surface-input: #1b1b20;
+  --hairline: rgba(255, 255, 255, 0.1);
+  --hairline-soft: rgba(255, 255, 255, 0.06);
+  --refract: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --text-primary: #f4f4f6;
+  --text-secondary: #a1a1aa;
+  --text-muted: #71717a;
+  --accent: #f43f5e;
+  --accent-tint: rgba(244, 63, 94, 0.16);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --radius: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: var(--text-primary);
+  font-family: "SF Pro Text", "SF Pro Display", "Segoe UI Variable Text", "Segoe UI Variable", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  line-height: 1.42;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button,
+textarea {
+  font: inherit;
+  color: inherit;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+button {
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ─── Прозрачная обёртка и зоны ресайза ──────────────────────────── */
+
+#commentsShell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+}
+
+.resize-zone {
+  position: fixed;
+  z-index: 90;
+  -webkit-app-region: no-drag;
+}
+
+.resize-n { top: 0; left: 20px; right: 20px; height: 9px; cursor: ns-resize; }
+.resize-s { bottom: 0; left: 20px; right: 20px; height: 9px; cursor: ns-resize; }
+.resize-w { top: 20px; bottom: 20px; left: 0; width: 9px; cursor: ew-resize; }
+.resize-e { top: 20px; bottom: 20px; right: 0; width: 9px; cursor: ew-resize; }
+.resize-nw { top: 0; left: 0; width: 20px; height: 20px; cursor: nwse-resize; }
+.resize-ne { top: 0; right: 0; width: 20px; height: 20px; cursor: nesw-resize; }
+.resize-sw { bottom: 0; left: 0; width: 20px; height: 20px; cursor: nesw-resize; }
+.resize-se { bottom: 0; right: 0; width: 20px; height: 20px; cursor: nwse-resize; }
+
+/* ─── Карточка окна комментариев iOS ─────────────────────────────── */
+
+#commentsCard {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+  backdrop-filter: blur(28px) saturate(160%);
+  border: 1px solid var(--hairline);
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.44),
+    var(--refract);
+}
+
+/* ─── Шапка окна (перетаскивание + действия) ─────────────────────── */
+
+.sheet-header {
+  flex: 0 0 auto;
+  padding: 10px 16px 12px;
+  border-bottom: 1px solid var(--hairline-soft);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.sheet-grabber {
+  width: 36px;
+  height: 4px;
+  margin: 0 auto 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.header-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.header-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.total-badge {
+  height: 20px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  -webkit-app-region: no-drag;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease), border-color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.icon-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.icon-btn:active {
+  transform: scale(0.94);
+}
+
+.icon-btn.active {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.close-btn:hover {
+  color: #fecdd3;
+  background: rgba(244, 63, 94, 0.24);
+  border-color: rgba(244, 63, 94, 0.36);
+}
+
+.video-context {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Лента комментариев ─────────────────────────────────────────── */
+
+.scroll-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 16px 24px;
+  scroll-behavior: smooth;
+}
+
+.scroll-area::-webkit-scrollbar {
+  width: 5px;
+}
+
+.scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-area::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.scroll-area::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.comments-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.comment-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  animation: rowIn 220ms var(--ease);
+}
+
+@keyframes rowIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.comment-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.ava-wrap {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #27272e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: grid;
+  place-items: center;
+}
+
+.ava-wrap.small {
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
+}
+
+.ava-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ava-fallback {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.ava-wrap.small .ava-fallback {
+  font-size: 10px;
+}
+
+.comment-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.comment-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  line-height: 1.3;
+}
+
+.comment-author {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #c8c8d0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
+
+.creator-pill {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-tint);
+  color: #fda4af;
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.comment-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.comment-text {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.46;
+  color: #ececf0;
+  word-break: break-word;
+  user-select: text;
+}
+
+.comment-text:empty {
+  display: none;
+}
+
+/* Фото, гифки и стикеры внутри комментариев */
+.comment-media-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.comment-media-btn {
+  position: relative;
+  display: block;
+  max-width: 176px;
+  max-height: 184px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #1b1b20;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: transform 150ms var(--ease), border-color 150ms var(--ease);
+}
+
+.comment-media-btn:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.comment-media-btn:active {
+  transform: scale(0.97);
+}
+
+.comment-media-btn.is-sticker {
+  max-width: 120px;
+  max-height: 120px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.comment-media-img {
+  display: block;
+  max-width: 176px;
+  max-height: 184px;
+  width: auto;
+  height: auto;
+  object-fit: cover;
+}
+
+.comment-media-btn.is-sticker .comment-media-img {
+  max-width: 120px;
+  max-height: 120px;
+  object-fit: contain;
+}
+
+.media-kind-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(14, 14, 18, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Просмотр фото/гифки во всё окно комментариев */
+.media-lightbox {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 10, 14, 0.88);
+  backdrop-filter: blur(20px);
+  animation: rowIn 160ms var(--ease);
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.lightbox-close svg {
+  width: 16px;
+  height: 16px;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.lightbox-img {
+  max-width: 100%;
+  max-height: calc(100% - 36px);
+  border-radius: 14px;
+  object-fit: contain;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.author-liked-tag {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.comment-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 3px;
+}
+
+.text-action {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: color 140ms var(--ease);
+}
+
+.text-action:hover {
+  color: var(--text-primary);
+}
+
+.comment-like {
+  flex: 0 0 32px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
+  padding-top: 2px;
+  color: var(--text-muted);
+  transition: color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.comment-like svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.comment-like:hover {
+  color: var(--text-primary);
+}
+
+.comment-like:active {
+  transform: scale(0.9);
+}
+
+.comment-like.liked {
+  color: var(--accent);
+}
+
+.comment-like.liked svg {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.comment-like-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Вложенные ответы */
+.replies-list {
+  margin-left: 42px;
+  padding-left: 10px;
+  border-left: 1px solid var(--hairline-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reply-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+/* ─── Скелетон и пустое состояние ────────────────────────────────── */
+
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.skel-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.skel-ava {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #232329;
+  flex: 0 0 32px;
+}
+
+.skel-col {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 3px;
+}
+
+.skel-bar {
+  height: 10px;
+  border-radius: 999px;
+  background: #232329;
+}
+
+.w-30 { width: 30%; }
+.w-35 { width: 35%; }
+.w-40 { width: 40%; }
+.w-45 { width: 45%; }
+.w-50 { width: 50%; }
+.w-60 { width: 60%; }
+.w-75 { width: 75%; }
+.w-80 { width: 80%; }
+.w-85 { width: 85%; }
+.w-90 { width: 90%; }
+.w-95 { width: 95%; }
+
+.shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  transform: translateX(-100%);
+  animation: shimmer 1.35s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  to { transform: translateX(100%); }
+}
+
+.empty-state {
+  padding: 48px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+}
+
+.empty-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--hairline-soft);
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+  margin-bottom: 4px;
+}
+
+.empty-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.empty-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.empty-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  max-width: 240px;
+}
+
+.load-more-wrap {
+  padding: 16px 0 8px;
+  display: flex;
+  justify-content: center;
+}
+
+.load-more-btn {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--hairline);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background-color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.load-more-btn:hover {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.load-more-btn:active {
+  transform: scale(0.97);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.scroll-sentinel {
+  height: 2px;
+}
+
+/* ─── Нижнее поле ввода комментария ──────────────────────────────── */
+
+.composer-wrap {
+  flex: 0 0 auto;
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--hairline-soft);
+  background: rgba(16, 16, 20, 0.94);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--hairline-soft);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.login-btn {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: var(--text-primary);
+  color: #111113;
+  font-size: 11.5px;
+  font-weight: 600;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  transition: opacity 140ms var(--ease);
+}
+
+.login-btn:hover { opacity: 0.9; }
+
+.reply-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.reply-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cancel-reply-btn {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  border-radius: 50%;
+}
+
+.cancel-reply-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.cancel-reply-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.composer-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  min-height: 42px;
+  padding: 5px 5px 5px 14px;
+  border-radius: 21px;
+  background: var(--surface-input);
+  border: 1px solid var(--hairline);
+  transition: border-color 150ms var(--ease), background-color 150ms var(--ease);
+}
+
+.composer-form:focus-within {
+  background: #202026;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.comment-input {
+  flex: 1 1 auto;
+  display: block;
+  height: 32px;
+  min-height: 32px;
+  max-height: 92px;
+  margin: 0;
+  padding: 6px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: transparent;
+  color: var(--text-primary);
+  caret-color: var(--accent);
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 20px;
+  letter-spacing: 0;
+  user-select: text;
+}
+
+.comment-input::-webkit-scrollbar {
+  display: none;
+}
+
+.comment-input::placeholder {
+  color: #8e8e98;
+}
+
+.send-btn {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  background: var(--accent);
+  transition: background-color 140ms var(--ease), opacity 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.send-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.send-btn:disabled {
+  opacity: 0.32;
+  background: rgba(255, 255, 255, 0.16);
+  cursor: default;
+}
+
+.send-btn:not(:disabled):hover {
+  background: #fb5672;
+}
+
+.send-btn:not(:disabled):active {
+  transform: scale(0.93);
+}
+
+/* ─── Тост и уголок ресайза ──────────────────────────────────────── */
+
+.toast {
+  position: absolute;
+  z-index: 30;
+  top: 64px;
+  left: 50%;
+  max-width: calc(100% - 28px);
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(28, 28, 34, 0.96);
+  border: 1px solid var(--hairline);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 180ms var(--ease), transform 200ms var(--ease);
+}
+
+.toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.corner-cue {
+  position: absolute;
+  z-index: 15;
+  right: 5px;
+  bottom: 5px;
+  width: 16px;
+  height: 16px;
+  color: rgba(255, 255, 255, 0.32);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms var(--ease);
+}
+
+#commentsCard:hover .corner-cue {
+  opacity: 1;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(244, 244, 246, 0.65);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ─── Пересылка комментария (кнопка + iOS-лист контактов) ────────── */
+
+.forward-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.forward-action svg {
+  width: 12px;
+  height: 12px;
+}
+
+.forward-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: rgba(10, 10, 14, 0.72);
+  backdrop-filter: blur(14px);
+  animation: rowIn 160ms var(--ease);
+}
+
+.forward-sheet-card {
+  max-height: 88%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-top-left-radius: 22px;
+  border-top-right-radius: 22px;
+  background: #17171d;
+  border-top: 1px solid var(--hairline);
+  box-shadow: 0 -10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.forward-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.forward-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.forward-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.forward-pill-btn {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--hairline-soft);
+  transition: background-color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.forward-pill-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.forward-pill-btn:active {
+  transform: scale(0.96);
+}
+
+.forward-preview-box {
+  padding: 9px 11px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--hairline-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.forward-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #fda4af;
+}
+
+.forward-preview-meta svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+}
+
+.forward-preview-text {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  line-height: 1.4;
+  max-height: 54px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.forward-active-chat-btn {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 11px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #ffffff;
+  background: rgba(244, 63, 94, 0.22);
+  border: 1px solid rgba(244, 63, 94, 0.42);
+  transition: background-color 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.forward-active-chat-btn:hover {
+  background: rgba(244, 63, 94, 0.32);
+}
+
+.forward-search-input,
+.forward-note-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 11px;
+  border: 1px solid var(--hairline-soft);
+  background: var(--surface-input);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  outline: none;
+  user-select: text;
+}
+
+.forward-search-input:focus,
+.forward-note-input:focus {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: #202026;
+}
+
+.forward-contacts-scroll {
+  flex: 1 1 auto;
+  min-height: 110px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.forward-contacts-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.forward-contacts-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+}
+
+.forward-empty {
+  padding: 22px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.forward-contacts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.forward-contact-row {
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  transition: background-color 140ms var(--ease);
+}
+
+.forward-contact-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.forward-contact-row.selected {
+  background: rgba(244, 63, 94, 0.15);
+}
+
+.forward-contact-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.forward-contact-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forward-contact-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.forward-check {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.24);
+  display: grid;
+  place-items: center;
+  color: transparent;
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+}
+
+.forward-contact-row.selected .forward-check {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.forward-check svg {
+  width: 12px;
+  height: 12px;
+}
+
+.forward-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.forward-send-btn {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 11px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  flex: 0 0 auto;
+  transition: opacity 140ms var(--ease), transform 120ms var(--ease);
+}
+
+.forward-send-btn:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+.forward-send-btn:not(:disabled):active {
+  transform: scale(0.96);
+}

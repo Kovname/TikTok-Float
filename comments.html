@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  >
+  <title>Комментарии · TikTok Float</title>
+  <link rel="stylesheet" href="comments.css">
+</head>
+<body>
+  <div id="commentsShell">
+    <div class="resize-zone resize-n" data-resize="n" aria-hidden="true"></div>
+    <div class="resize-zone resize-s" data-resize="s" aria-hidden="true"></div>
+    <div class="resize-zone resize-e" data-resize="e" aria-hidden="true"></div>
+    <div class="resize-zone resize-w" data-resize="w" aria-hidden="true"></div>
+    <div class="resize-zone resize-nw" data-resize="nw" aria-hidden="true"></div>
+    <div class="resize-zone resize-ne" data-resize="ne" aria-hidden="true"></div>
+    <div class="resize-zone resize-sw" data-resize="sw" aria-hidden="true"></div>
+    <div class="resize-zone resize-se" data-resize="se" aria-hidden="true"></div>
+
+    <div id="commentsCard">
+      <header class="sheet-header">
+        <div class="sheet-grabber" aria-hidden="true"></div>
+
+        <div class="header-row">
+          <div class="header-title-wrap">
+            <h1 class="header-title">Комментарии</h1>
+            <span id="totalBadge" class="total-badge tabular">0</span>
+          </div>
+
+          <div class="header-actions">
+            <button id="refreshBtn" class="icon-btn" type="button" title="Обновить комментарии" aria-label="Обновить комментарии">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.3 5.7"></path>
+                <path d="M20 4v7h-7"></path>
+              </svg>
+            </button>
+
+            <button id="dockBtn" class="icon-btn active" type="button" title="Прикрепить рядом с видео" aria-label="Прикрепить рядом с видео" aria-pressed="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+                <path d="M12 4v16"></path>
+              </svg>
+            </button>
+
+            <button id="closeBtn" class="icon-btn close-btn" type="button" title="Закрыть" aria-label="Закрыть">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                <path d="M7 7l10 10"></path>
+                <path d="M17 7L7 17"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="videoContext" class="video-context">Загрузка ролика</div>
+      </header>
+
+      <main id="scrollArea" class="scroll-area" aria-live="polite">
+        <div id="skeletonList" class="skeleton-list" aria-hidden="true">
+          <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-35 shimmer"></div><div class="skel-bar w-90 shimmer"></div><div class="skel-bar w-60 shimmer"></div></div></div>
+          <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-45 shimmer"></div><div class="skel-bar w-80 shimmer"></div></div></div>
+          <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-30 shimmer"></div><div class="skel-bar w-95 shimmer"></div><div class="skel-bar w-50 shimmer"></div></div></div>
+          <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-40 shimmer"></div><div class="skel-bar w-75 shimmer"></div></div></div>
+          <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-35 shimmer"></div><div class="skel-bar w-85 shimmer"></div></div></div>
+        </div>
+
+        <div id="emptyState" class="empty-state hidden">
+          <div class="empty-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+            </svg>
+          </div>
+          <div class="empty-title">Комментариев пока нет</div>
+          <div class="empty-sub">Напиши первый комментарий в поле ниже или обнови список</div>
+        </div>
+
+        <ul id="commentsList" class="comments-list"></ul>
+
+        <div id="loadMoreWrap" class="load-more-wrap hidden">
+          <button id="loadMoreBtn" class="load-more-btn" type="button">Загрузить ещё</button>
+        </div>
+
+        <div id="scrollSentinel" class="scroll-sentinel" aria-hidden="true"></div>
+      </main>
+
+      <footer class="composer-wrap">
+        <div id="loginBanner" class="login-banner hidden">
+          <span>Для отправки нужен вход в TikTok</span>
+          <button id="openLoginBtn" class="login-btn" type="button">Войти по QR</button>
+        </div>
+
+        <div id="replyBar" class="reply-bar hidden">
+          <span id="replyText" class="reply-text"></span>
+          <button id="cancelReplyBtn" class="cancel-reply-btn" type="button" aria-label="Отменить ответ">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path d="M7 7l10 10"></path>
+              <path d="M17 7L7 17"></path>
+            </svg>
+          </button>
+        </div>
+
+        <form id="composerForm" class="composer-form">
+          <textarea
+            id="commentInput"
+            class="comment-input"
+            rows="1"
+            maxlength="300"
+            placeholder="Написать комментарий"
+            aria-label="Текст комментария"
+          ></textarea>
+
+          <button id="sendBtn" class="send-btn" type="submit" disabled title="Отправить" aria-label="Отправить комментарий">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 19V5"></path>
+              <path d="M6 11l6-6 6 6"></path>
+            </svg>
+          </button>
+        </form>
+      </footer>
+
+      <!-- Лист пересылки комментария контактам / в чат -->
+      <div id="forwardSheet" class="forward-sheet hidden" role="dialog" aria-label="Переслать комментарий">
+        <div class="forward-sheet-card">
+          <div class="forward-header">
+            <span class="forward-title">Переслать комментарий</span>
+            <div class="forward-header-actions">
+              <button id="forwardCopyBtn" class="forward-pill-btn" type="button" title="Скопировать комментарий со ссылкой на ролик">
+                Копировать
+              </button>
+              <button id="forwardOpenMainBtn" class="forward-pill-btn" type="button" title="Открыть меню отправки в основном окне плеера">
+                В плеере
+              </button>
+              <button id="forwardCloseBtn" class="icon-btn" type="button" aria-label="Закрыть">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                  <path d="M7 7l10 10"></path>
+                  <path d="M17 7L7 17"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="forward-preview-box">
+            <div class="forward-preview-meta">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+              </svg>
+              <span id="forwardPreviewAuthor" class="forward-preview-author">@author</span>
+            </div>
+            <div id="forwardPreviewText" class="forward-preview-text"></div>
+          </div>
+
+          <button id="forwardActiveChatBtn" class="forward-active-chat-btn hidden" type="button">
+            Отправить в открытый чат
+          </button>
+
+          <div class="forward-search-wrap">
+            <input id="forwardSearchInput" class="forward-search-input" type="text" placeholder="Поиск контактов…" autocomplete="off">
+          </div>
+
+          <div class="forward-contacts-scroll">
+            <div id="forwardEmptyContacts" class="forward-empty hidden">
+              Контактов пока не найдено — открой «Сообщения» или нажми «В плеере»
+            </div>
+            <ul id="forwardContactsList" class="forward-contacts-list" role="listbox"></ul>
+          </div>
+
+          <div class="forward-footer">
+            <input id="forwardNoteInput" class="forward-note-input" type="text" placeholder="Добавить сообщение…" maxlength="220" autocomplete="off">
+            <button id="forwardSendBtn" class="forward-send-btn" type="button" disabled>Отправить</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="mediaLightbox" class="media-lightbox hidden" role="dialog" aria-label="Просмотр медиа">
+        <button id="lightboxClose" class="lightbox-close" type="button" aria-label="Закрыть просмотр">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+            <path d="M7 7l10 10"></path>
+            <path d="M17 7L7 17"></path>
+          </svg>
+        </button>
+        <img id="lightboxImg" class="lightbox-img" alt="" referrerpolicy="no-referrer">
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+      <svg class="corner-cue corner-cue-se" viewBox="0 0 20 20" aria-hidden="true">
+        <path d="M16 5v3a8 8 0 0 1-8 8H5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+      </svg>
+    </div>
+  </div>
+
+  <script src="comments.js"></script>
+</body>
+</html>

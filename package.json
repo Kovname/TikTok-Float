@@ -1,0 +1,69 @@
+{
+  "name": "tiktok-float",
+  "version": "2.0.0",
+  "description": "Плавающее окно TikTok в стиле iOS поверх всех приложений",
+  "author": "TikTok Float",
+  "main": "main.js",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win"
+  },
+  "build": {
+    "appId": "ru.tiktokfloat.desktop",
+    "productName": "TikTok Float",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "comments-preload.js",
+      "messages-preload.js",
+      "dm-engine-preload.js",
+      "dm-engine.js",
+      "webview-preload.js",
+      "inject.js",
+      "renderer.js",
+      "index.html",
+      "styles.css",
+      "comments.html",
+      "comments.css",
+      "comments.js",
+      "messages.html",
+      "messages.css",
+      "messages.js",
+      "icon.png",
+      "icon.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "icon.ico",
+      "icon.png",
+      "webview-preload.js",
+      "dm-engine-preload.js"
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": true
+    },
+    "portable": {
+      "artifactName": "TikTok Float.exe"
+    }
+  },
+  "devDependencies": {
+    "electron": "45.3.4",
+    "electron-builder": "^26.18.0"
+  }
+}

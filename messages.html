@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  >
+  <title>Сообщения · TikTok Float</title>
+  <link rel="stylesheet" href="messages.css">
+</head>
+<body>
+  <div id="messagesShell">
+    <div class="resize-zone resize-n" data-resize="n" aria-hidden="true"></div>
+    <div class="resize-zone resize-s" data-resize="s" aria-hidden="true"></div>
+    <div class="resize-zone resize-e" data-resize="e" aria-hidden="true"></div>
+    <div class="resize-zone resize-w" data-resize="w" aria-hidden="true"></div>
+    <div class="resize-zone resize-nw" data-resize="nw" aria-hidden="true"></div>
+    <div class="resize-zone resize-ne" data-resize="ne" aria-hidden="true"></div>
+    <div class="resize-zone resize-sw" data-resize="sw" aria-hidden="true"></div>
+    <div class="resize-zone resize-se" data-resize="se" aria-hidden="true"></div>
+
+    <div id="messagesCard">
+      <header class="sheet-header">
+        <div class="sheet-grabber" aria-hidden="true"></div>
+        <div class="header-row">
+          <div class="header-left">
+            <button id="backBtn" class="icon-btn back-btn hidden" type="button" title="К списку чатов" aria-label="Назад к чатам">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M15 18l-6-6 6-6"></path>
+              </svg>
+            </button>
+            <div class="header-title-wrap">
+              <h1 id="headerTitle" class="header-title">Сообщения</h1>
+              <span id="unreadBadge" class="total-badge tabular hidden">0</span>
+            </div>
+          </div>
+
+          <div class="header-actions">
+            <button id="webModeBtn" class="mode-pill-btn" type="button" title="Переключить между iOS-интерфейсом и прямым веб-чатом TikTok" aria-pressed="false">
+              Веб
+            </button>
+
+            <button id="refreshBtn" class="icon-btn" type="button" title="Обновить чаты" aria-label="Обновить чаты">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                <path d="M21 3v6h-6"></path>
+              </svg>
+            </button>
+
+            <button id="dockBtn" class="icon-btn active" type="button" title="Прикрепить рядом с видео" aria-label="Прикрепить рядом с видео" aria-pressed="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3.5" y="4.5" width="17" height="15" rx="3"></rect>
+                <path d="M12 4.5v15"></path>
+              </svg>
+            </button>
+
+            <button id="closeBtn" class="icon-btn close-btn" type="button" title="Закрыть" aria-label="Закрыть">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                <path d="M7 7l10 10"></path>
+                <path d="M17 7L7 17"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- Экран входа по QR (если не авторизован) -->
+      <section id="loginView" class="login-view hidden">
+        <div class="login-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+          </svg>
+        </div>
+        <div class="login-title">Личные сообщения TikTok</div>
+        <p class="login-sub">Войди по QR-коду, чтобы читать чаты, отвечать друзьям и смотреть присланные ролики прямо в плеере</p>
+        <button id="loginQrBtn" class="primary-btn" type="button">Войти по QR-коду</button>
+      </section>
+
+      <!-- Основная рабочая область (список чатов + диалог, адаптивно 1 или 2 колонки) -->
+      <div id="workspace" class="workspace">
+        <!-- Колонка 1: Список диалогов -->
+        <aside id="inboxPane" class="inbox-pane">
+          <div class="search-wrap">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="M20 20l-3.6-3.6"></path>
+            </svg>
+            <input id="chatSearch" class="search-input" type="text" placeholder="Поиск чатов" autocomplete="off">
+          </div>
+
+          <div class="inbox-scroll">
+            <div id="inboxSkeleton" class="skeleton-list">
+              <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-45 shimmer"></div><div class="skel-bar w-80 shimmer"></div></div></div>
+              <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-35 shimmer"></div><div class="skel-bar w-70 shimmer"></div></div></div>
+              <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-55 shimmer"></div><div class="skel-bar w-65 shimmer"></div></div></div>
+              <div class="skel-row"><div class="skel-ava shimmer"></div><div class="skel-col"><div class="skel-bar w-40 shimmer"></div><div class="skel-bar w-85 shimmer"></div></div></div>
+            </div>
+
+            <div id="inboxEmpty" class="empty-state hidden">
+              <div class="empty-title">Диалогов пока нет</div>
+              <div class="empty-sub">Нажми «Обновить» в шапке или открой прямой веб-чат TikTok</div>
+              <button id="inboxOpenWebBtn" class="secondary-pill-btn" type="button">Открыть веб-чат TikTok</button>
+            </div>
+
+            <ul id="chatList" class="chat-list" role="listbox" aria-label="Список диалогов"></ul>
+          </div>
+        </aside>
+
+        <!-- Колонка 2: Активный диалог -->
+        <section id="threadPane" class="thread-pane">
+          <div id="threadPlaceholder" class="empty-state">
+            <div class="empty-title">Выбери чат</div>
+            <div class="empty-sub">Присланные видео откроются в основном плеере на отдельной вкладке чата</div>
+          </div>
+
+          <div id="threadActive" class="thread-active hidden">
+            <div id="threadScroll" class="thread-scroll">
+              <button id="loadOlderBtn" class="load-older-btn hidden" type="button">Загрузить ранние</button>
+              <div id="threadSkeleton" class="thread-skeleton hidden" aria-hidden="true">
+                <div class="skel-bubble left w-60 shimmer"></div>
+                <div class="skel-bubble right w-45 shimmer"></div>
+                <div class="skel-bubble left w-70 shimmer"></div>
+              </div>
+              <div id="threadEmpty" class="empty-state hidden">
+                <div class="empty-title">Сообщений не найдено</div>
+                <div class="empty-sub">Напиши сообщение ниже или переключись в прямой веб-чат TikTok</div>
+                <button id="threadOpenWebBtn" class="secondary-pill-btn" type="button">Открыть в веб-чате TikTok</button>
+              </div>
+              <div id="messagesList" class="messages-list"></div>
+            </div>
+
+            <footer class="composer-wrap">
+              <form id="composerForm" class="composer-form">
+                <textarea
+                  id="msgInput"
+                  class="msg-input"
+                  rows="1"
+                  placeholder="Сообщение…"
+                  maxlength="500"
+                ></textarea>
+                <button id="sendBtn" class="send-btn" type="submit" title="Отправить" aria-label="Отправить" disabled>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 19V5"></path>
+                    <path d="M6 11l6-6 6 6"></path>
+                  </svg>
+                </button>
+              </form>
+            </footer>
+          </div>
+        </section>
+      </div>
+
+      <!-- Прямой веб-режим TikTok Messages (по кнопке «Веб», без верхней шапки и левого меню TikTok) -->
+      <div id="webChatPane" class="web-chat-pane hidden">
+        <webview
+          id="liveDmView"
+          class="live-dm-view"
+          allowpopups
+        ></webview>
+      </div>
+
+      <!-- Лист пересылки комментария/сообщения другому контакту прямо из чата -->
+      <div id="chatForwardSheet" class="chat-forward-sheet hidden" role="dialog" aria-label="Переслать контактам">
+        <div class="chat-forward-card">
+          <div class="chat-forward-header">
+            <span class="chat-forward-title">Переслать комментарий</span>
+            <div class="chat-forward-actions">
+              <button id="chatForwardCopyBtn" class="secondary-pill-btn small" type="button">Копировать</button>
+              <button id="chatForwardCloseBtn" class="icon-btn" type="button" aria-label="Закрыть">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                  <path d="M7 7l10 10"></path>
+                  <path d="M17 7L7 17"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div id="chatForwardPreview" class="chat-forward-preview"></div>
+          <input id="chatForwardSearch" class="search-input" type="text" placeholder="Поиск контактов…" autocomplete="off">
+          <ul id="chatForwardList" class="chat-forward-list" role="listbox"></ul>
+          <div class="chat-forward-footer">
+            <input id="chatForwardNote" class="search-input" type="text" placeholder="Добавить сообщение…" maxlength="200" autocomplete="off">
+            <button id="chatForwardSendBtn" class="primary-btn" type="button" disabled>Отправить</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Просмотр присланных фото -->
+      <div id="mediaLightbox" class="media-lightbox hidden" role="dialog" aria-label="Просмотр фото">
+        <button id="lightboxClose" class="lightbox-close" type="button" aria-label="Закрыть">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M7 7l10 10"></path>
+            <path d="M17 7L7 17"></path>
+          </svg>
+        </button>
+        <img id="lightboxImg" class="lightbox-img" alt="" referrerpolicy="no-referrer">
+      </div>
+
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+
+  <script src="messages.js"></script>
+</body>
+</html>

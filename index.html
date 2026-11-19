@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+  >
+  <title>TikTok Float</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="shell">
+    <!-- Невидимые зоны изменения размера по краям и углам -->
+    <div class="resize-zone resize-n" data-resize="n" aria-hidden="true"></div>
+    <div class="resize-zone resize-s" data-resize="s" aria-hidden="true"></div>
+    <div class="resize-zone resize-e" data-resize="e" aria-hidden="true"></div>
+    <div class="resize-zone resize-w" data-resize="w" aria-hidden="true"></div>
+    <div class="resize-zone resize-nw" data-resize="nw" aria-hidden="true"></div>
+    <div class="resize-zone resize-ne" data-resize="ne" aria-hidden="true"></div>
+    <div class="resize-zone resize-sw" data-resize="sw" aria-hidden="true"></div>
+    <div class="resize-zone resize-se" data-resize="se" aria-hidden="true"></div>
+
+    <div id="bezel">
+      <!-- Видеосцена -->
+      <main id="stage">
+        <webview
+          id="view"
+          webpreferences="backgroundThrottling=false, contextIsolation=yes, nodeIntegration=no"
+        ></webview>
+
+        <!-- Отдельная вкладка для просмотра ролика, присланного в ЛС (не сбивает ленту рекомендаций) -->
+        <webview
+          id="dmVideoView"
+          class="hidden"
+          webpreferences="backgroundThrottling=false, contextIsolation=yes, nodeIntegration=no"
+        ></webview>
+
+        <!-- Слой жестов: 1 клик = пауза, 2 клика = лайк, удержание = репост -->
+        <div id="gestureLayer" aria-label="Область управления видео"></div>
+
+        <!-- Анимация лайков по двойному клику -->
+        <div id="heartLayer" aria-hidden="true"></div>
+
+        <!-- Индикатор удержания для репоста -->
+        <div id="holdRing" class="hold-ring" aria-hidden="true">
+          <div class="hold-ring-badge">
+            <svg class="hold-ring-svg" viewBox="0 0 64 64">
+              <circle class="hold-ring-track" cx="32" cy="32" r="27"></circle>
+              <circle id="holdRingProgress" class="hold-ring-progress" cx="32" cy="32" r="27"></circle>
+            </svg>
+            <svg class="hold-ring-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 2.5l3.5 3.5L17 9.5"></path>
+              <path d="M3.5 11V9a3 3 0 0 1 3-3h14"></path>
+              <path d="M7 21.5L3.5 18 7 14.5"></path>
+              <path d="M20.5 13v2a3 3 0 0 1-3 3h-14"></path>
+            </svg>
+          </div>
+          <span class="hold-ring-label">Репост</span>
+        </div>
+
+        <!-- Краткий центральный индикатор паузы/воспроизведения -->
+        <div id="centerGlyph" class="center-glyph" aria-hidden="true"></div>
+
+        <!-- Плавающий верхний слой без стандартного заголовка Windows -->
+        <header id="topChrome">
+          <div class="top-scrim" aria-hidden="true"></div>
+
+          <div class="top-bar">
+            <div class="top-group top-left">
+              <button id="closeBtn" class="glass-circle close-circle" type="button" title="Закрыть" aria-label="Закрыть">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                  <path d="M7 7l10 10"></path>
+                  <path d="M17 7L7 17"></path>
+                </svg>
+              </button>
+              <button id="minBtn" class="glass-circle" type="button" title="Свернуть" aria-label="Свернуть">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                  <path d="M6.5 12h11"></path>
+                </svg>
+              </button>
+              <button id="messagesBtn" class="glass-circle" type="button" title="Личные сообщения (D)" aria-label="Личные сообщения" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span id="messagesUnreadDot" class="unread-dot hidden" aria-hidden="true"></span>
+              </button>
+            </div>
+
+            <!-- iOS Dynamic Pill: перетаскивание и живой статус -->
+            <div id="dragPill" class="drag-pill" title="Перетащи окно">
+              <span class="grabber-bar" aria-hidden="true"></span>
+              <span id="pillMeta" class="pill-meta">
+                <span id="statusDot" class="status-dot"></span>
+                <span id="statusText" class="status-text">Загрузка</span>
+              </span>
+            </div>
+
+            <div class="top-group top-right">
+              <button id="pinBtn" class="glass-circle" type="button" title="Закрепить поверх окон" aria-label="Закрепить поверх окон" aria-pressed="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M9.5 4.5h5l-.8 5.4 2.8 2.6v1.5h-9v-1.5l2.8-2.6-.8-5.4z"></path>
+                  <path d="M12 14v5.5"></path>
+                </svg>
+              </button>
+              <button id="sizeBtn" class="glass-circle" type="button" title="Сменить размер окна" aria-label="Сменить размер окна">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M14.5 4.5h5v5"></path>
+                  <path d="M19.5 4.5L13.5 10.5"></path>
+                  <path d="M9.5 19.5h-5v-5"></path>
+                  <path d="M4.5 19.5l6-6"></path>
+                </svg>
+              </button>
+              <button id="moreBtn" class="glass-circle" type="button" title="Настройки" aria-label="Настройки" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <circle cx="6.5" cy="12" r="1.5"></circle>
+                  <circle cx="12" cy="12" r="1.5"></circle>
+                  <circle cx="17.5" cy="12" r="1.5"></circle>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Баннер режима QR-входа или проверки TikTok -->
+          <div id="modeBanner" class="mode-banner hidden">
+            <span id="modeBannerText">Отсканируй QR-код в TikTok</span>
+            <button id="modeDoneBtn" class="mode-done-btn" type="button">Готово</button>
+          </div>
+
+          <!-- Вкладки источника: «Рекомендации» / «Чат: Имя ×» (появляются при открытии ролика из ЛС) -->
+          <div id="sourceTabs" class="source-tabs hidden" role="tablist" aria-label="Источник видео">
+            <button id="tabFeedBtn" class="source-tab active" type="button" role="tab" aria-selected="true">Рекомендации</button>
+            <div id="tabChatWrap" class="source-tab-chat" role="tab" aria-selected="false">
+              <button id="tabChatBtn" class="source-tab-label" type="button">Чат</button>
+              <button id="tabChatCloseBtn" class="source-tab-close" type="button" title="Закрыть вкладку чата" aria-label="Закрыть вкладку чата">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+                  <path d="M7 7l10 10"></path>
+                  <path d="M17 7L7 17"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <!-- Чистый минималистичный HUD автора (без правого столбца кнопок поверх видео) -->
+        <section id="videoHud" class="video-hud" aria-label="Информация о ролике">
+          <div class="bottom-scrim" aria-hidden="true"></div>
+
+          <div class="hud-layout">
+            <div class="hud-info">
+              <div class="hud-author">
+                <div id="hudAvatarWrap" class="hud-avatar-wrap">
+                  <img id="hudAvatar" class="hud-avatar hidden" alt="" referrerpolicy="no-referrer">
+                  <span id="hudAvatarFallback" class="hud-avatar-fallback">T</span>
+                </div>
+                <span id="hudHandle" class="hud-handle">@tiktok</span>
+                <span id="hudLikedBadge" class="hud-status-badge is-liked hidden" title="Лайк поставлен" aria-label="Лайк поставлен">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 20.6l-1.4-1.28C5.4 14.66 2.2 11.74 2.2 8.2A4.9 4.9 0 0 1 7.1 3.3c1.82 0 3.55.86 4.9 2.22C13.35 4.16 15.08 3.3 16.9 3.3a4.9 4.9 0 0 1 4.9 4.9c0 3.54-3.2 6.46-8.4 11.12L12 20.6z"></path>
+                  </svg>
+                </span>
+                <span id="hudRepostBadge" class="hud-status-badge is-reposted hidden" title="В репостах" aria-label="В репостах">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M17 2.5l3.5 3.5L17 9.5"></path>
+                    <path d="M3.5 11V9a3 3 0 0 1 3-3h14"></path>
+                    <path d="M7 21.5L3.5 18 7 14.5"></path>
+                    <path d="M20.5 13v2a3 3 0 0 1-3 3h-14"></path>
+                  </svg>
+                </span>
+              </div>
+              <p id="hudDesc" class="hud-desc" title="Нажми, чтобы раскрыть описание"></p>
+              <div id="hudMusicRow" class="hud-music hidden">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M9 18V6l11-2v12"></path>
+                  <circle cx="6.5" cy="18" r="2.5"></circle>
+                  <circle cx="17.5" cy="16" r="2.5"></circle>
+                </svg>
+                <span id="hudMusic"></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Нижняя плавающая iOS-панель: сверху реакции (лайк, комменты, отправить, репост), снизу плеер -->
+        <nav id="controlDock" class="control-dock" aria-label="Управление и действия">
+          <div class="dock-engage-row">
+            <button id="hudLikeBtn" class="engage-pill" type="button" title="Лайк — двойной клик" aria-label="Лайк по двойному клику" aria-pressed="false">
+              <svg class="heart-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 20.6l-1.4-1.28C5.4 14.66 2.2 11.74 2.2 8.2A4.9 4.9 0 0 1 7.1 3.3c1.82 0 3.55.86 4.9 2.22C13.35 4.16 15.08 3.3 16.9 3.3a4.9 4.9 0 0 1 4.9 4.9c0 3.54-3.2 6.46-8.4 11.12L12 20.6z"></path>
+              </svg>
+              <span id="hudLikeCount" class="engage-count tabular">0</span>
+            </button>
+
+            <button id="hudCommentBtn" class="engage-pill" type="button" title="Открыть комментарии (C)" aria-label="Комментарии" aria-pressed="false">
+              <svg class="comment-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20.5 11.5a8.2 8.2 0 0 1-.88 3.72 8.3 8.3 0 0 1-7.42 4.58 8.2 8.2 0 0 1-3.72-.88L3.5 20.5l1.58-4.98a8.2 8.2 0 0 1-.88-3.72 8.3 8.3 0 0 1 4.58-7.42 8.2 8.2 0 0 1 3.72-.88h.4a8.28 8.28 0 0 1 7.6 7.6v.4z"></path>
+              </svg>
+              <span id="hudCommentCount" class="engage-count tabular">0</span>
+            </button>
+
+            <button id="hudShareBtn" class="engage-pill" type="button" title="Отправить контактам" aria-label="Отправить контактам">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 3L10 14"></path>
+                <path d="M21 3l-7 18-4-7-7-4 18-7z"></path>
+              </svg>
+              <span class="engage-label">В ЛС</span>
+            </button>
+
+            <button id="hudRepostBtn" class="engage-pill" type="button" title="Репост — удерживай" aria-label="Репост по удержанию" aria-pressed="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 2.5l3.5 3.5L17 9.5"></path>
+                <path d="M3.5 11V9a3 3 0 0 1 3-3h14"></path>
+                <path d="M7 21.5L3.5 18 7 14.5"></path>
+                <path d="M20.5 13v2a3 3 0 0 1-3 3h-14"></path>
+              </svg>
+              <span id="hudRepostLabel" class="engage-label">Репост</span>
+            </button>
+          </div>
+
+          <div class="dock-play-row">
+            <div class="dock-side dock-left">
+              <div id="volumeControl" class="volume-control">
+                <div id="volumePopover" class="volume-popover" role="group" aria-label="Регулятор громкости">
+                  <span id="volumePopoverVal" class="volume-pct tabular">100%</span>
+                  <div
+                    id="volumeTrack"
+                    class="volume-track"
+                    role="slider"
+                    tabindex="0"
+                    aria-label="Громкость"
+                    aria-orientation="vertical"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="100"
+                  >
+                    <div class="volume-rail">
+                      <div id="volumeFill" class="volume-fill"></div>
+                    </div>
+                    <div id="volumeThumb" class="volume-thumb"></div>
+                  </div>
+                </div>
+
+                <button id="muteBtn" class="dock-btn" type="button" title="Звук (клик — вкл/выкл, колесо — громкость)" aria-label="Выключить звук">
+                  <span class="icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M11 5L6 9H3v6h3l5 4V5z"></path>
+                      <path d="M15.5 8.5a5 5 0 0 1 0 7"></path>
+                      <path d="M18.5 5.5a9 9 0 0 1 0 13"></path>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+
+              <button id="speedBtn" class="dock-speed tabular" type="button" title="Скорость видео (ПКМ — сброс на 1×)" aria-label="Скорость видео">1×</button>
+            </div>
+
+            <div class="dock-center">
+              <button id="prevBtn" class="dock-btn" type="button" title="Предыдущий ролик" aria-label="Предыдущий ролик">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M18 15l-6-6-6 6"></path>
+                </svg>
+              </button>
+
+              <button id="playBtn" class="dock-btn dock-play" type="button" title="Пауза" aria-label="Пауза">
+                <span class="icon">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="7" y="5.5" width="3.5" height="13" rx="1.2" fill="currentColor"></rect>
+                    <rect x="13.5" y="5.5" width="3.5" height="13" rx="1.2" fill="currentColor"></rect>
+                  </svg>
+                </span>
+              </button>
+
+              <button id="nextBtn" class="dock-btn" type="button" title="Следующий ролик" aria-label="Следующий ролик">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6"></path>
+                </svg>
+              </button>
+            </div>
+
+            <div class="dock-side dock-right">
+              <button id="autoBtn" class="dock-auto" type="button" title="Автопросмотр" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M13 3L5.5 13.5H12L11 21l7.5-10.5H12L13 3z"></path>
+                </svg>
+                <span id="autoLabel">Авто</span>
+              </button>
+            </div>
+          </div>
+        </nav>
+
+        <!-- Тонкая полоса прогресса видео с перемоткой -->
+        <div id="scrubber" class="scrubber" role="slider" aria-label="Прогресс видео" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="scrubber-track">
+            <div id="scrubberFill" class="scrubber-fill"></div>
+          </div>
+        </div>
+
+        <!-- Всплывающий iOS-лист настроек -->
+        <aside id="settingsSheet" class="settings-sheet hidden" aria-label="Настройки окна">
+          <div class="sheet-section">
+            <div class="sheet-head">
+              <span class="sheet-label">Скорость видео</span>
+              <span id="speedMeta" class="sheet-meta tabular">1×</span>
+            </div>
+            <div id="speedChips" class="chip-grid five-col" role="group" aria-label="Скорость воспроизведения">
+              <button class="chip-btn" type="button" data-speed="0.5">0.5×</button>
+              <button class="chip-btn active" type="button" data-speed="1">1×</button>
+              <button class="chip-btn" type="button" data-speed="1.25">1.25×</button>
+              <button class="chip-btn" type="button" data-speed="1.5">1.5×</button>
+              <button class="chip-btn" type="button" data-speed="2">2×</button>
+            </div>
+          </div>
+
+          <div class="sheet-section">
+            <div class="sheet-head">
+              <span class="sheet-label">Автопросмотр</span>
+              <span id="autoStatusMeta" class="sheet-meta">Выключен</span>
+            </div>
+            <div class="segmented" role="group" aria-label="Режим автопросмотра">
+              <button id="modeEndBtn" class="seg-btn active" type="button">До конца видео</button>
+              <button id="modeIntervalBtn" class="seg-btn" type="button">По таймеру</button>
+            </div>
+            <div id="intervalChips" class="chip-grid hidden" role="group" aria-label="Интервал в секундах">
+              <button class="chip-btn" type="button" data-seconds="5">5 с</button>
+              <button class="chip-btn" type="button" data-seconds="8">8 с</button>
+              <button class="chip-btn" type="button" data-seconds="10">10 с</button>
+              <button class="chip-btn" type="button" data-seconds="15">15 с</button>
+              <button class="chip-btn" type="button" data-seconds="30">30 с</button>
+              <button class="chip-btn" type="button" data-seconds="60">60 с</button>
+            </div>
+          </div>
+
+          <div class="sheet-section">
+            <div class="sheet-head">
+              <span class="sheet-label">Размер окна</span>
+              <span id="sizeMeta" class="sheet-meta">Стандарт</span>
+            </div>
+            <div id="presetChips" class="chip-grid four-col" role="group" aria-label="Размер окна">
+              <button class="chip-btn" type="button" data-preset="mini">Мини</button>
+              <button class="chip-btn" type="button" data-preset="compact">Компакт</button>
+              <button class="chip-btn" type="button" data-preset="standard">Стандарт</button>
+              <button class="chip-btn" type="button" data-preset="large">Большой</button>
+            </div>
+            <div class="sheet-hint">Потяни любой угол или используй Ctrl + колесо</div>
+          </div>
+
+          <div class="sheet-section">
+            <div class="sheet-head">
+              <span class="sheet-label">Громкость</span>
+              <span id="volumeSettingsVal" class="sheet-meta tabular">100%</span>
+            </div>
+            <input id="volumeSlider" class="ios-slider" type="range" min="0" max="100" step="1" value="100" aria-label="Громкость видео">
+          </div>
+
+          <div class="sheet-section">
+            <div class="sheet-head">
+              <span class="sheet-label">Прозрачность</span>
+              <span id="opacityVal" class="sheet-meta tabular">100%</span>
+            </div>
+            <input id="opacity" class="ios-slider" type="range" min="55" max="100" step="1" value="100" aria-label="Прозрачность окна">
+
+            <div class="sheet-row-inline">
+              <span class="sheet-label">Масштаб ленты</span>
+              <div class="stepper">
+                <button id="zoomOutBtn" class="stepper-btn" type="button" aria-label="Уменьшить масштаб">−</button>
+                <span id="zoomVal" class="stepper-val tabular">100%</span>
+                <button id="zoomInBtn" class="stepper-btn" type="button" aria-label="Увеличить масштаб">+</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="sheet-section sheet-actions">
+            <button id="qrLoginBtn" class="sheet-action-btn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1.5"></rect>
+                <rect x="14" y="3.5" width="6.5" height="6.5" rx="1.5"></rect>
+                <rect x="3.5" y="14" width="6.5" height="6.5" rx="1.5"></rect>
+                <path d="M14 14h2.5v2.5H14z"></path>
+                <path d="M18.5 14v2.5"></path>
+                <path d="M14 18.5h6.5v2"></path>
+              </svg>
+              <span>Войти по QR-коду</span>
+            </button>
+            <button id="siteMenuBtn" class="sheet-action-btn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 21a8 8 0 0 0-16 0"></path>
+                <circle cx="12" cy="8" r="4"></circle>
+              </svg>
+              <span>Интерфейс TikTok</span>
+            </button>
+            <button id="reloadBtn" class="sheet-action-btn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.3 5.7"></path>
+                <path d="M20 4v7h-7"></path>
+              </svg>
+              <span>Обновить ленту</span>
+            </button>
+            <button id="browserBtn" class="sheet-action-btn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M14 4h6v6"></path>
+                <path d="M20 4l-9 9"></path>
+                <path d="M19 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4"></path>
+              </svg>
+              <span>Открыть в браузере</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- Нижний iOS-лист «Отправить контактам» (недавние контакты всегда сверху) -->
+        <section id="shareSheet" class="share-sheet hidden" role="dialog" aria-label="Отправить контактам">
+          <div class="share-grabber" aria-hidden="true"></div>
+          <div class="share-header">
+            <h2 id="shareSheetTitle" class="share-title">Отправить</h2>
+            <button id="shareCloseBtn" class="share-close-btn" type="button" title="Закрыть" aria-label="Закрыть">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true">
+                <path d="M7 7l10 10"></path>
+                <path d="M17 7L7 17"></path>
+              </svg>
+            </button>
+          </div>
+
+          <div id="shareCommentBanner" class="share-comment-banner hidden">
+            <div class="share-comment-info">
+              <span id="shareCommentAuthor" class="share-comment-author">@author</span>
+              <span id="shareCommentText" class="share-comment-text"></span>
+            </div>
+            <button id="shareCommentClearBtn" class="share-comment-clear" type="button" title="Отправить только видео" aria-label="Убрать комментарий">
+              ×
+            </button>
+          </div>
+
+          <div class="share-search-wrap">
+            <svg class="share-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="M20 20l-3.6-3.6"></path>
+            </svg>
+            <input id="shareSearchInput" class="share-search-input" type="text" placeholder="Поиск контактов" autocomplete="off">
+          </div>
+
+          <div id="shareContactsBody" class="share-contacts-body">
+            <div id="shareSkeleton" class="share-skeleton hidden" aria-hidden="true">
+              <div class="share-skel-row"><div class="share-skel-ava shimmer"></div><div class="share-skel-line w-55 shimmer"></div></div>
+              <div class="share-skel-row"><div class="share-skel-ava shimmer"></div><div class="share-skel-line w-40 shimmer"></div></div>
+              <div class="share-skel-row"><div class="share-skel-ava shimmer"></div><div class="share-skel-line w-75 shimmer"></div></div>
+            </div>
+
+            <div id="shareLoginBox" class="share-empty hidden">
+              <p class="share-empty-text">Войди в TikTok, чтобы видеть список контактов и отправлять ролики</p>
+              <button id="shareQrBtn" class="primary-btn" type="button">Войти по QR-коду</button>
+            </div>
+
+            <div id="shareEmptyBox" class="share-empty hidden">
+              <p class="share-empty-text">Открой сообщения один раз или найди контакт в поиске выше</p>
+            </div>
+
+            <ul id="shareContactsList" class="share-contacts-list" role="listbox" aria-multiselectable="true"></ul>
+          </div>
+
+          <div class="share-footer">
+            <div class="share-note-row">
+              <input id="shareNoteInput" class="share-note-input" type="text" placeholder="Добавить сообщение" maxlength="160">
+              <button id="shareSendBtn" class="share-send-btn" type="button" disabled>Отправить</button>
+            </div>
+            <div class="share-quick-row">
+              <button id="shareCopyLinkBtn" class="share-quick-btn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M10 13a5 5 0 0 0 7.07 0l2.83-2.83a5 5 0 0 0-7.07-7.07L11 4.93"></path>
+                  <path d="M14 11a5 5 0 0 0-7.07 0L4.1 13.83a5 5 0 0 0 7.07 7.07L13 19.07"></path>
+                </svg>
+                <span>Копировать ссылку</span>
+              </button>
+              <button id="shareOpenMessagesBtn" class="share-quick-btn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+                </svg>
+                <span>Открыть ЛС</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Предложение входа по QR-коду при первом запуске -->
+        <div id="qrWelcome" class="qr-welcome hidden" role="dialog" aria-labelledby="qrWelcomeTitle">
+          <div class="qr-card">
+            <img class="qr-app-icon" src="icon.png" alt="">
+            <h2 id="qrWelcomeTitle" class="qr-title">Войди в TikTok по QR-коду</h2>
+            <p class="qr-sub">Отсканируй код в приложении на телефоне — так заработают твоя лента, лайки, репосты и комментарии</p>
+            <div class="qr-actions">
+              <button id="welcomeQrBtn" class="primary-btn" type="button">Войти по QR-коду</button>
+              <button id="welcomeSkipBtn" class="ghost-btn" type="button">Продолжить без входа</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Скелетная загрузка в стиле iOS -->
+        <div id="loading" class="overlay">
+          <div class="loading-skeleton" aria-hidden="true">
+            <div class="skel-stage"></div>
+            <div class="skel-bottom">
+              <div class="skel-author">
+                <div class="skel-avatar shimmer"></div>
+                <div class="skel-line w-40 shimmer"></div>
+              </div>
+              <div class="skel-line w-75 shimmer"></div>
+              <div class="skel-line w-55 shimmer"></div>
+            </div>
+          </div>
+          <div class="loading-caption">
+            <div class="overlay-title">Загрузка ленты</div>
+            <div class="overlay-sub">Подключаюсь к TikTok</div>
+          </div>
+        </div>
+
+        <!-- Спокойный экран ошибки -->
+        <div id="errorPanel" class="overlay hidden">
+          <div class="error-card">
+            <div class="error-glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="9"></circle>
+                <path d="M12 8v5"></path>
+                <circle cx="12" cy="16.5" r="0.6" fill="currentColor" stroke="none"></circle>
+              </svg>
+            </div>
+            <div class="overlay-title">Не удалось открыть TikTok</div>
+            <div id="errorText" class="overlay-sub">Проверь соединение с интернетом и попробуй снова</div>
+            <div class="error-actions">
+              <button id="retryBtn" class="primary-btn" type="button">Повторить</button>
+              <button id="errorBrowserBtn" class="ghost-btn" type="button">Открыть в браузере</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Уведомление-капсула -->
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+        <!-- Изящные уголки-подсказки масштабирования (как в iPadOS / iOS PiP) -->
+        <svg class="corner-cue corner-cue-se" viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M16 5v3a8 8 0 0 1-8 8H5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+        <svg class="corner-cue corner-cue-sw" viewBox="0 0 20 20" aria-hidden="true">
+          <path d="M4 5v3a8 8 0 0 0 8 8h3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+      </main>
+    </div>
+  </div>
+
+  <script src="inject.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
