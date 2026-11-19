@@ -181,6 +181,8 @@ let dmReadyToken = 0;
 let lastPlaying = null;
 let commentsOpen = false;
 let commentsOpening = false;
+let commentsSyncToken = 0;
+let commentsSwitchTimer = null;
 let messagesOpen = false;
 let settingsOpen = false;
 let shareOpen = false;
@@ -706,6 +708,9 @@ function onWebviewIpcMessage(event) {
     lastIpcHudAt = Date.now();
     applyHudUpdate(msg.data);
   } else if (msg.type === 'comments' && msg.data) {
+    if (lastHudVideoId && msg.data.videoId && msg.data.videoId !== lastHudVideoId) {
+      return;
+    }
     if (!commentsOpening || (msg.data.comments && msg.data.comments.length > 0)) {
       window.appApi.pushCommentsData(msg.data);
     }
@@ -923,6 +928,8 @@ function applyHudUpdate(hud) {
 
   if (hud.videoId && hud.videoId !== prevVideoId) {
     lastHudVideoId = hud.videoId;
+    commentsSyncToken++;
+    clearTimeout(commentsSwitchTimer);
     if (commentsOpen && prevVideoId) {
       window.appApi.pushCommentsData({
         videoId: hud.videoId,
@@ -934,9 +941,13 @@ function applyHudUpdate(hud) {
         hasMore: false,
         comments: []
       });
-      setTimeout(() => {
-        if (commentsOpen && !commentsOpening) ensureCommentsOpen(false);
-      }, 650);
+      const expectedVideoId = hud.videoId;
+      commentsSwitchTimer = setTimeout(() => {
+        commentsSwitchTimer = null;
+        if (commentsOpen && lastHudVideoId === expectedVideoId) {
+          ensureCommentsOpen(false);
+        }
+      }, 320);
     }
   }
 
@@ -2443,22 +2454,90 @@ function openInBrowser() {
 
 /* ─── Связь с отдельным окном комментариев ───────────────────────── */
 
+function pushCommentsIfCurrent(data) {
+  if (!data || typeof data !== 'object') return;
+  if (lastHudVideoId && data.videoId && data.videoId !== lastHudVideoId) return;
+  window.appApi.pushCommentsData(data);
+}
+
 async function ensureCommentsOpen(forceReopen) {
-  if (!activeReady() || commentsOpening) return null;
+  if (!activeReady()) return null;
+  clearTimeout(commentsSwitchTimer);
+  commentsSwitchTimer = null;
+  const myToken = ++commentsSyncToken;
+  const targetVideoId = (currentHud && currentHud.videoId) || lastHudVideoId || '';
   commentsOpening = true;
+
+  const isStillMine = () =>
+    myToken === commentsSyncToken &&
+    commentsOpen &&
+    (!targetVideoId || !lastHudVideoId || lastHudVideoId === targetVideoId);
 
   try {
     await pageEval('window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.setCommentsTracking(true) : null');
+    if (!isStillMine()) return null;
 
-    const prep = await trustedClickTarget('comment', forceReopen ? { forceClick: true } : null);
-    if (prep && (!prep.alreadyOpen || forceReopen)) {
-      for (let i = 0; i < 16; i++) {
-        await delay(300);
+    // Если API уже предзагрузил комментарии именно для этого ролика — показываем мгновенно!
+    if (!forceReopen) {
+      const instant = await pageEval(
+        'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.getComments(false) : null'
+      );
+      if (!isStillMine()) return null;
+      if (
+        instant &&
+        instant.comments &&
+        instant.comments.length > 0 &&
+        (!targetVideoId || instant.videoId === targetVideoId)
+      ) {
+        pushCommentsIfCurrent(instant);
+        return instant;
+      }
+    }
+
+    let prep = await trustedClickTarget('comment', forceReopen ? { forceClick: true } : null);
+    if (!isStillMine()) return null;
+
+    // Если скрытый сайдбар TikTok застрял на ПРОШЛОМ видео — сначала ждём ~1с,
+    // а если TikTok сам не обновился, переоткрываем сайдбар на текущем ролике
+    if (prep && prep.alreadyOpen && prep.sidebarStale && !forceReopen) {
+      for (let w = 0; w < 4; w++) {
+        await delay(260);
+        if (!isStillMine()) return null;
         const data = await pageEval(
           'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.getComments(false) : null'
         );
+        if (!isStillMine()) return null;
+        if (data && data.comments && data.comments.length > 0 && !data.staleDom) {
+          pushCommentsIfCurrent(data);
+          return data;
+        }
+        if (data && !data.staleDom && !data.loading) {
+          pushCommentsIfCurrent(data);
+          return data;
+        }
+      }
+      // Всё ещё застрял на прошлом видео: закрываем и заново открываем комментарии для текущего
+      await trustedClickTarget('comment', { forceClick: true });
+      await delay(240);
+      if (!isStillMine()) return null;
+      prep = await trustedClickTarget('comment', { forceClick: true });
+      if (!isStillMine()) return null;
+    }
+
+    if (prep && (!prep.alreadyOpen || forceReopen || prep.sidebarStale)) {
+      for (let i = 0; i < 16; i++) {
+        await delay(280);
+        if (!isStillMine()) return null;
+        const data = await pageEval(
+          'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.getComments(false) : null'
+        );
+        if (!isStillMine()) return null;
         if (data && data.comments && data.comments.length > 0) {
-          window.appApi.pushCommentsData(data);
+          pushCommentsIfCurrent(data);
+          return data;
+        }
+        if (data && !data.loading && !data.staleDom) {
+          pushCommentsIfCurrent(data);
           return data;
         }
       }
@@ -2467,10 +2546,13 @@ async function ensureCommentsOpen(forceReopen) {
     const finalData = await pageEval(
       'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.getComments(true) : null'
     );
-    if (finalData) window.appApi.pushCommentsData(finalData);
+    if (!isStillMine()) return null;
+    if (finalData) pushCommentsIfCurrent(finalData);
     return finalData;
   } finally {
-    commentsOpening = false;
+    if (myToken === commentsSyncToken) {
+      commentsOpening = false;
+    }
   }
 }
 
@@ -2523,6 +2605,9 @@ async function handleCommentsAction(action) {
   if (!activeReady()) return;
 
   if (action.type === 'refresh') {
+    await pageEval(
+      'window.__TIKTOK_FLOAT__ && window.__TIKTOK_FLOAT__.clearDomCommentsForCurrent ? window.__TIKTOK_FLOAT__.clearDomCommentsForCurrent() : null'
+    );
     await ensureCommentsOpen(false);
     return;
   }
@@ -2531,7 +2616,7 @@ async function handleCommentsAction(action) {
     const data = await pageEval(
       'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.loadMoreComments() : null'
     );
-    if (data) window.appApi.pushCommentsData(data);
+    if (data) pushCommentsIfCurrent(data);
     return;
   }
 
@@ -2542,7 +2627,7 @@ async function handleCommentsAction(action) {
       const data = await pageEval(
         'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.getComments(true) : null'
       );
-      if (data) window.appApi.pushCommentsData(data);
+      if (data) pushCommentsIfCurrent(data);
     }
     return;
   }
@@ -2554,7 +2639,7 @@ async function handleCommentsAction(action) {
       const data = await pageEval(
         'window.__TIKTOK_FLOAT__ ? window.__TIKTOK_FLOAT__.getComments(true) : null'
       );
-      if (data) window.appApi.pushCommentsData(data);
+      if (data) pushCommentsIfCurrent(data);
     }
     return;
   }

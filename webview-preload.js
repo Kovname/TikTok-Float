@@ -267,18 +267,20 @@ const EARLY_NET_TAP = `(() => {
 
     if (url.includes('/comment/list')) {
       const rawList = Array.isArray(data.comments) ? data.comments : [];
-      const parsed = rawList.map(normalizeComment).filter(Boolean);
+      const parsedAll = rawList.map(normalizeComment).filter(Boolean);
       const awemeMatch = url.match(/[?&]aweme_id=([^&]+)/);
       const awemeId =
         (awemeMatch ? decodeURIComponent(awemeMatch[1]) : '') ||
-        (parsed[0] && parsed[0].awemeId) ||
+        (parsedAll[0] && parsedAll[0].awemeId) ||
         '';
       if (awemeId) {
+        const parsed = parsedAll.filter((c) => !c.awemeId || c.awemeId === awemeId);
         store.lastAwemeId = awemeId;
         const prev = store.commentsByVideo.get(awemeId) || {
           items: [],
           hasMore: false,
-          total: 0
+          total: 0,
+          loaded: false
         };
         const map = new Map(prev.items.map((item) => [item.cid, item]));
         for (const item of parsed) {
@@ -288,7 +290,8 @@ const EARLY_NET_TAP = `(() => {
         store.commentsByVideo.set(awemeId, {
           items: Array.from(map.values()),
           hasMore: Boolean(data.has_more === 1 || data.has_more === true),
-          total: Math.max(Number(data.total || 0), prev.total || 0, map.size)
+          total: Math.max(Number(data.total || 0), prev.total || 0, map.size),
+          loaded: true
         });
         emit('comments', { awemeId });
       }

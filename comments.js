@@ -55,6 +55,7 @@ let loadMoreUnlockTimer = null;
 let toastTimer = null;
 let lastVideoId = '';
 let lastAuthorKey = '';
+let lastDescKey = '';
 let lastListSignature = '';
 let renderedMap = new Map();
 let fingerprintToKey = new Map();
@@ -391,9 +392,10 @@ function handleIncomingData(payload) {
   }
 
   currentData = payload;
-  const incomingAuthorKey = String(payload.authorHandle || payload.authorName || '').toLowerCase();
+  const incomingAuthorKey = String(payload.authorHandle || payload.authorName || '').trim().toLowerCase();
+  const incomingDescKey = String(payload.desc || '').trim().toLowerCase().slice(0, 48);
 
-  // Не сбрасываем уже загруженные комментарии, если временный dom_-ID уточнился до числового ID того же ролика
+  // Не сбрасываем уже загруженные комментарии ТОЛЬКО если временный dom_-ID уточнился до числового ID ТОГО ЖЕ ролика (совпадают и автор, и описание)
   const isDomToNumericUpgrade = Boolean(
     lastVideoId &&
       payload.videoId &&
@@ -402,7 +404,8 @@ function handleIncomingData(payload) {
         (payload.videoId.startsWith('dom_') && /^\d{12,}$/.test(lastVideoId))) &&
       lastAuthorKey &&
       incomingAuthorKey &&
-      lastAuthorKey === incomingAuthorKey
+      lastAuthorKey === incomingAuthorKey &&
+      lastDescKey === incomingDescKey
   );
 
   const videoChanged = Boolean(
@@ -415,11 +418,13 @@ function handleIncomingData(payload) {
   if (!lastVideoId && payload.videoId) {
     lastVideoId = payload.videoId;
     lastAuthorKey = incomingAuthorKey;
+    lastDescKey = incomingDescKey;
   } else if (isDomToNumericUpgrade) {
     if (/^\d{12,}$/.test(payload.videoId)) lastVideoId = payload.videoId;
   } else if (videoChanged) {
     lastVideoId = payload.videoId;
     lastAuthorKey = incomingAuthorKey;
+    lastDescKey = incomingDescKey;
     resetCommentsListState();
   }
 
@@ -440,7 +445,12 @@ function handleIncomingData(payload) {
     els.loginBanner.classList.add('hidden');
   }
 
-  const list = Array.isArray(payload.comments) ? payload.comments : [];
+  const isNumericPayloadId = Boolean(payload.videoId && /^\d{12,}$/.test(String(payload.videoId)));
+  const rawList = Array.isArray(payload.comments) ? payload.comments : [];
+  // Финальный барьер: никогда не рендерим комментарий, чей awemeId принадлежит другому ролику
+  const list = isNumericPayloadId
+    ? rawList.filter((c) => !c || !c.awemeId || !/^\d{12,}$/.test(String(c.awemeId)) || String(c.awemeId) === String(payload.videoId))
+    : rawList;
 
   if (payload.loading && list.length === 0 && renderedMap.size === 0) {
     els.skeletonList.classList.remove('hidden');

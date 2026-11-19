@@ -10,7 +10,7 @@
  */
 function tiktokFloatPageController() {
   const KEY = '__TIKTOK_FLOAT__';
-  if (window[KEY] && window[KEY].version >= 13) return window[KEY].status();
+  if (window[KEY] && window[KEY].version >= 14) return window[KEY].status();
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -61,6 +61,8 @@ function tiktokFloatPageController() {
     commentsOpen: false,
     commentsLoading: false,
     currentVideoId: '',
+    videoSwitchedAt: 0,
+    prevVideoCommentFps: new Set(),
     domCommentsByVideo: new Map(),
     repostedIds: new Set(),
     likedOverrides: new Map(),
@@ -212,8 +214,178 @@ function tiktokFloatPageController() {
     });
   }
 
+  function isCommentApiUrl(rawUrl) {
+    const u = String(rawUrl || '');
+    return (
+      u.includes('/comment/list/reply') ||
+      u.includes('/comment/list') ||
+      u.includes('/comment/publish')
+    );
+  }
+
+  function apiFirstUrl(obj) {
+    if (!obj) return '';
+    if (typeof obj === 'string') return obj;
+    if (Array.isArray(obj.url_list) && obj.url_list.length) return obj.url_list[0];
+    if (Array.isArray(obj.urlList) && obj.urlList.length) return obj.urlList[0];
+    return '';
+  }
+
+  function apiPickAvatar(user) {
+    if (!user || typeof user !== 'object') return '';
+    return (
+      apiFirstUrl(user.avatar_thumb) ||
+      apiFirstUrl(user.avatarThumb) ||
+      apiFirstUrl(user.avatar_medium) ||
+      apiFirstUrl(user.avatarLarger) ||
+      apiFirstUrl(user.avatar_larger) ||
+      apiFirstUrl(user.avatar) ||
+      ''
+    );
+  }
+
+  function normalizeApiComment(c) {
+    if (!c || typeof c !== 'object') return null;
+    const cid = String(c.cid || c.id || '');
+    const user = c.user || {};
+    const images = [];
+    if (Array.isArray(c.image_list)) {
+      for (const img of c.image_list) {
+        if (!img) continue;
+        const thumb =
+          apiFirstUrl(img.medium_url) ||
+          apiFirstUrl(img.crop_url) ||
+          apiFirstUrl(img.origin_url) ||
+          apiFirstUrl(img);
+        const full = apiFirstUrl(img.origin_url) || thumb;
+        if (thumb) images.push({ thumb, full, kind: 'photo' });
+      }
+    }
+    let sticker = null;
+    if (c.sticker && typeof c.sticker === 'object') {
+      const anim =
+        apiFirstUrl(c.sticker.animate_url) ||
+        apiFirstUrl(c.sticker.webp_url) ||
+        apiFirstUrl(c.sticker.gif_url);
+      const stat = apiFirstUrl(c.sticker.static_url);
+      const src = anim || stat;
+      if (src) {
+        sticker = {
+          thumb: src,
+          full: src,
+          kind: anim ? 'gif' : 'sticker',
+          width: Number(c.sticker.width || 0),
+          height: Number(c.sticker.height || 0)
+        };
+      }
+    }
+    return {
+      cid: cid || 'c_' + Math.random().toString(36).slice(2, 10),
+      awemeId: String(c.aweme_id || c.awemeId || ''),
+      text: String(c.text || '').trim(),
+      createTime: Number(c.create_time || 0),
+      diggCount: Number(c.digg_count || 0),
+      userDigged: Boolean(c.user_digged === 1 || c.user_digged === true),
+      replyCount: Number(c.reply_comment_total || 0),
+      isAuthorDigged: Boolean(c.is_author_digged),
+      labelText: String(c.label_text || ''),
+      authorName: String(user.nickname || user.unique_id || 'Пользователь'),
+      authorHandle: String(user.unique_id || ''),
+      avatar: apiPickAvatar(user),
+      replyToUser: c.reply_to_username ? String(c.reply_to_username) : '',
+      images,
+      sticker,
+      source: 'api'
+    };
+  }
+
+  function ingestCommentApiJson(url, data) {
+    if (!data || typeof data !== 'object') return;
+
+    if (url.includes('/comment/list/reply')) {
+      const rawList = Array.isArray(data.comments) ? data.comments : [];
+      const parsed = rawList.map(normalizeApiComment).filter(Boolean);
+      const commentIdMatch = url.match(/[?&]comment_id=([^&]+)/);
+      const parentId = commentIdMatch ? decodeURIComponent(commentIdMatch[1]) : '';
+      if (parentId && parsed.length) {
+        const existing = NET.repliesByComment.get(parentId) || [];
+        const map = new Map(existing.map((item) => [item.cid, item]));
+        for (const item of parsed) map.set(item.cid, item);
+        NET.repliesByComment.set(parentId, Array.from(map.values()));
+        if (S.commentsOpen) emitComments(false);
+      }
+      return;
+    }
+
+    if (url.includes('/comment/list')) {
+      const rawList = Array.isArray(data.comments) ? data.comments : [];
+      const parsedAll = rawList.map(normalizeApiComment).filter(Boolean);
+      const awemeMatch = url.match(/[?&]aweme_id=([^&]+)/);
+      const queryAwemeId = awemeMatch ? decodeURIComponent(awemeMatch[1]).trim() : '';
+      const awemeId = queryAwemeId || (parsedAll[0] && parsedAll[0].awemeId) || '';
+      if (!awemeId) return;
+
+      // Строгая фильтрация: в корзину awemeId попадают ТОЛЬКО комментарии именно этого ролика
+      const parsed = parsedAll.filter((c) => !c.awemeId || c.awemeId === awemeId);
+      const prev = NET.commentsByVideo.get(awemeId) || {
+        items: [],
+        hasMore: false,
+        total: 0,
+        loaded: false
+      };
+      const map = new Map(prev.items.map((item) => [item.cid, item]));
+      for (const item of parsed) {
+        const old = map.get(item.cid);
+        map.set(item.cid, old ? { ...old, ...item } : item);
+      }
+      NET.commentsByVideo.set(awemeId, {
+        items: Array.from(map.values()),
+        hasMore: Boolean(data.has_more === 1 || data.has_more === true),
+        total: Math.max(Number(data.total || 0), prev.total || 0, map.size),
+        loaded: true
+      });
+      if (NET.commentsByVideo.size > 40) {
+        const oldest = NET.commentsByVideo.keys().next().value;
+        if (oldest && oldest !== awemeId) NET.commentsByVideo.delete(oldest);
+      }
+
+      // Эмитим в окно комментариев ТОЛЬКО если пришёл ответ именно для текущего активного видео!
+      if (S.commentsOpen) {
+        const activeId = extractVideoId(activeFeedItem(), activeVideo());
+        if (activeId === awemeId) {
+          S.commentsLoading = false;
+          emitComments(true);
+        }
+      }
+      return;
+    }
+
+    if (url.includes('/comment/publish')) {
+      const created = data.comment ? normalizeApiComment(data.comment) : null;
+      if (created && created.awemeId) {
+        const prev = NET.commentsByVideo.get(created.awemeId) || {
+          items: [],
+          hasMore: false,
+          total: 0,
+          loaded: true
+        };
+        const items = [created, ...prev.items.filter((x) => x.cid !== created.cid)];
+        NET.commentsByVideo.set(created.awemeId, {
+          items,
+          hasMore: prev.hasMore,
+          total: Math.max(prev.total + 1, items.length),
+          loaded: true
+        });
+        if (S.commentsOpen) {
+          const activeId = extractVideoId(activeFeedItem(), activeVideo());
+          if (activeId === created.awemeId) emitComments(true);
+        }
+      }
+    }
+  }
+
   function installMainWorldLiveGuards() {
-    // 1) Главный перехватчик fetch: вырезает LIVE-элементы из /api/recommend/item_list при S.skipLives
+    // 1) Главный перехватчик fetch: вырезает LIVE-элементы и точно перехватывает /api/comment/* по aweme_id
     const curFetch = window.fetch;
     if (typeof curFetch === 'function' && !curFetch.__ttfLiveFilterWrapped) {
       const wrappedFetch = function (...args) {
@@ -223,7 +395,19 @@ function tiktokFloatPageController() {
           const req = args[0];
           url = typeof req === 'string' ? req : (req && req.url) || '';
         } catch {}
-        if (!isFeedListUrl(url)) return promise;
+        const wantFeed = isFeedListUrl(url);
+        const wantComment = !wantFeed && isCommentApiUrl(url);
+        if (!wantFeed && !wantComment) return promise;
+
+        if (wantComment) {
+          promise
+            .then((res) => {
+              if (!res || !res.ok) return;
+              return res.clone().json().then((json) => ingestCommentApiJson(url, json));
+            })
+            .catch(() => {});
+          return promise;
+        }
 
         return promise.then(async (res) => {
           try {
@@ -267,7 +451,10 @@ function tiktokFloatPageController() {
           this.addEventListener('readystatechange', () => {
             try {
               if (this.readyState !== 4 || this.status < 200 || this.status >= 300) return;
-              if (!isFeedListUrl(this.__ttfLiveUrl)) return;
+              const reqUrl = this.__ttfLiveUrl || '';
+              const wantFeed = isFeedListUrl(reqUrl);
+              const wantComment = !wantFeed && isCommentApiUrl(reqUrl);
+              if (!wantFeed && !wantComment) return;
               let json = null;
               if (this.responseType === 'json') {
                 json = this.response;
@@ -276,6 +463,10 @@ function tiktokFloatPageController() {
                 if (!raw || raw.charCodeAt(0) !== 123) return;
                 json = JSON.parse(raw);
               } else {
+                return;
+              }
+              if (wantComment) {
+                ingestCommentApiJson(reqUrl, json);
                 return;
               }
               const result = processFeedJsonForLives(json);
@@ -741,8 +932,11 @@ function tiktokFloatPageController() {
       }
     }
 
-    // 3) React Fiber на активном <article> или <video>
-    const fiberId = extractAwemeIdFromFiber(video) || extractAwemeIdFromFiber(item);
+    // 3) React Fiber на активном <article>, <video> или chrome-host (для фото-постов)
+    const fiberId =
+      extractAwemeIdFromFiber(video) ||
+      extractAwemeIdFromFiber(item) ||
+      (!video ? extractAwemeIdFromFiber(activeChromeHost()) : '');
     if (fiberId) return fiberId;
 
     // 4) Одиночная страница ролика (/video/123...)
@@ -1378,13 +1572,19 @@ function tiktokFloatPageController() {
       S.commentsOpen = true;
       S.currentVideoId = videoId;
       const forceToggle = Boolean(arg && arg.forceClick);
-      if (!forceToggle && isCommentsSidebarOpen()) {
-        return { ok: true, alreadyOpen: true, videoId };
+      const sidebarOpen = isCommentsSidebarOpen();
+      const sidebarVideoId = sidebarOpen ? detectSidebarVideoId() : '';
+      const isNum = /^\d{12,}$/.test(String(videoId));
+      const sidebarStale = Boolean(
+        sidebarOpen && isNum && sidebarVideoId && sidebarVideoId !== videoId
+      );
+      if (!forceToggle && sidebarOpen) {
+        return { ok: true, alreadyOpen: true, sidebarStale, sidebarVideoId, videoId };
       }
-      S.commentsLoading = true;
+      S.commentsLoading = !NET.commentsByVideo.has(videoId);
       const container = findCommentContainer(item);
       if (!container) return { ok: false, reason: 'not_found' };
-      return pinTarget(container, { videoId }, { preferInnerButton: true });
+      return pinTarget(container, { videoId, sidebarStale, sidebarVideoId }, { preferInnerButton: true });
     }
 
     if (kind === 'comment-like' && arg) {
@@ -1916,9 +2116,67 @@ function tiktokFloatPageController() {
     return bucket;
   }
 
+  function extractCommentCardAwemeId(card) {
+    if (!card) return '';
+    try {
+      for (const k of Object.keys(card)) {
+        if (!k.startsWith('__reactProps') && !k.startsWith('__reactFiber')) continue;
+        const seen = new WeakSet();
+        const stack = [card[k]];
+        let steps = 0;
+        while (stack.length && steps < 180) {
+          steps++;
+          const obj = stack.pop();
+          if (!obj || typeof obj !== 'object' || seen.has(obj)) continue;
+          seen.add(obj);
+          const candidate =
+            obj.aweme_id ||
+            obj.awemeId ||
+            obj.itemId ||
+            obj.item_id ||
+            (obj.comment && (obj.comment.aweme_id || obj.comment.awemeId)) ||
+            (obj.data && (obj.data.aweme_id || obj.data.awemeId || obj.data.itemId));
+          if (candidate && /^\d{15,22}$/.test(String(candidate))) {
+            return String(candidate);
+          }
+          for (const ck of Object.keys(obj)) {
+            if (
+              ck === 'return' ||
+              ck === 'sibling' ||
+              ck === 'alternate' ||
+              ck === '_owner' ||
+              ck === 'stateNode'
+            ) {
+              continue;
+            }
+            const v = obj[ck];
+            if (v && typeof v === 'object') stack.push(v);
+          }
+        }
+      }
+    } catch {}
+    return '';
+  }
+
+  function detectSidebarVideoId() {
+    const container = findCommentsSidebar();
+    if (!container) return '';
+    const wrappers = container.querySelectorAll(
+      '[class*="DivCommentObjectWrapper"], [class*="DivCommentItemContainer"]'
+    );
+    const limit = Math.min(wrappers.length, 5);
+    for (let i = 0; i < limit; i++) {
+      const id = extractCommentCardAwemeId(wrappers[i]);
+      if (id) return id;
+    }
+    return '';
+  }
+
   function scrapeDomComments(videoId) {
     const container = findCommentsSidebar();
-    if (!container) return { items: [], skeletons: 0 };
+    if (!container) {
+      return { items: [], visibleItems: [], skeletons: 0, staleMismatch: false, sidebarVideoId: '' };
+    }
 
     const wrappers = Array.from(
       container.querySelectorAll(
@@ -1926,9 +2184,12 @@ function tiktokFloatPageController() {
       )
     );
 
+    const isNumericId = /^\d{12,}$/.test(String(videoId || ''));
     let skeletons = 0;
-    const visibleItems = [];
-    const bucket = getDomCommentBucket(videoId);
+    let matchedOwnerCount = 0;
+    let mismatchOwnerCount = 0;
+    let sidebarVideoId = '';
+    const freshParsed = [];
 
     wrappers.forEach((card, idx) => {
       const userEl =
@@ -1943,6 +2204,17 @@ function tiktokFloatPageController() {
       if (!authorName && !text && media.length === 0) {
         skeletons++;
         return;
+      }
+
+      // 1) Главная защита: сверяем aweme_id / itemId прямо из React Fiber карточки комментария!
+      const cardAwemeId = extractCommentCardAwemeId(card);
+      if (cardAwemeId && !sidebarVideoId) sidebarVideoId = cardAwemeId;
+      if (isNumericId && cardAwemeId) {
+        if (cardAwemeId !== videoId) {
+          mismatchOwnerCount++;
+          return;
+        }
+        matchedOwnerCount++;
       }
 
       const avatarEl =
@@ -1994,30 +2266,77 @@ function tiktokFloatPageController() {
       const fp = commentFingerprint(authorName, authorHandle, text, media, null);
       const stableCid = 'dom_' + fp;
 
-      const parsedItem = {
-        cid: stableCid,
-        domIndex: idx,
-        authorName: authorName || 'Пользователь',
-        authorHandle,
-        avatar: avatarEl && avatarEl.src ? avatarEl.src : '',
-        text,
-        images: media,
-        sticker: null,
-        timeText: cleanText(timeEl),
-        createTime: 0,
-        diggText,
-        diggCount: parseCountText(diggText),
-        userDigged: isLikedDom(likeIconEl),
-        replyCount,
-        replies,
-        hasMoreReplies: Boolean(viewMoreEl),
-        isAuthorDigged: Boolean(card.querySelector('[data-e2e="comment-author-liked"]')),
-        labelText: /автор|creator/i.test(cleanText(card.querySelector('[class*="Creator"]')))
-          ? 'Автор'
-          : '',
-        source: 'dom'
-      };
+      freshParsed.push({
+        fp,
+        verifiedOwner: Boolean(isNumericId && cardAwemeId === videoId),
+        item: {
+          cid: stableCid,
+          awemeId: cardAwemeId || (isNumericId ? videoId : ''),
+          domIndex: idx,
+          authorName: authorName || 'Пользователь',
+          authorHandle,
+          avatar: avatarEl && avatarEl.src ? avatarEl.src : '',
+          text,
+          images: media,
+          sticker: null,
+          timeText: cleanText(timeEl),
+          createTime: 0,
+          diggText,
+          diggCount: parseCountText(diggText),
+          userDigged: isLikedDom(likeIconEl),
+          replyCount,
+          replies,
+          hasMoreReplies: Boolean(viewMoreEl),
+          isAuthorDigged: Boolean(card.querySelector('[data-e2e="comment-author-liked"]')),
+          labelText: /автор|creator/i.test(cleanText(card.querySelector('[class*="Creator"]')))
+            ? 'Автор'
+            : '',
+          source: 'dom'
+        }
+      });
+    });
 
+    const bucket = getDomCommentBucket(videoId);
+
+    // Если сайдбар TikTok всё ещё отрисовывает карточки ПРОШЛОГО видео — НИКОГДА не кладём их в корзину нового!
+    if (mismatchOwnerCount > 0 && matchedOwnerCount === 0) {
+      return {
+        items: Array.from(bucket.values()),
+        visibleItems: [],
+        skeletons,
+        staleMismatch: true,
+        sidebarVideoId
+      };
+    }
+
+    // 2) Вторая страховка (если у карточек нет React Fiber aweme_id): в первые 5 с после переключения
+    // проверяем, не являются ли видимые карточки точной копией комментариев прошлого ролика
+    if (
+      freshParsed.length > 0 &&
+      matchedOwnerCount === 0 &&
+      S.prevVideoCommentFps &&
+      S.prevVideoCommentFps.size > 0 &&
+      Date.now() - S.videoSwitchedAt < 5000
+    ) {
+      let overlap = 0;
+      for (const entry of freshParsed) {
+        if (S.prevVideoCommentFps.has(entry.fp)) overlap++;
+      }
+      if (overlap > 0 && overlap >= Math.ceil(freshParsed.length * 0.5)) {
+        return {
+          items: Array.from(bucket.values()),
+          visibleItems: [],
+          skeletons,
+          staleMismatch: true,
+          sidebarVideoId
+        };
+      }
+    }
+
+    const visibleItems = [];
+    for (const entry of freshParsed) {
+      const parsedItem = entry.item;
+      const stableCid = parsedItem.cid;
       const prev = bucket.get(stableCid);
       if (prev) {
         bucket.set(stableCid, {
@@ -2032,14 +2351,15 @@ function tiktokFloatPageController() {
       } else {
         bucket.set(stableCid, parsedItem);
       }
-
       visibleItems.push(bucket.get(stableCid));
-    });
+    }
 
     return {
       items: Array.from(bucket.values()),
       visibleItems,
-      skeletons
+      skeletons,
+      staleMismatch: false,
+      sidebarVideoId
     };
   }
 
@@ -2073,13 +2393,11 @@ function tiktokFloatPageController() {
     const domCountText = cleanText(commentCountEl);
 
     const isNumericId = /^\d{12,}$/.test(videoId);
-    const apiBucket =
-      NET.commentsByVideo.get(videoId) ||
-      (!isNumericId && NET.lastAwemeId ? NET.commentsByVideo.get(NET.lastAwemeId) : null) ||
-      null;
+    // СТРОГО точный ключ videoId — никогда не подставляем NET.lastAwemeId от чужого/предзагруженного видео!
+    const apiBucket = NET.commentsByVideo.get(videoId) || null;
 
     const domResult = scrapeDomComments(videoId);
-    const domList = domResult.items;
+    const domList = domResult.staleMismatch ? [] : domResult.items;
 
     let merged = [];
     if (apiBucket && apiBucket.items.length) {
@@ -2090,59 +2408,65 @@ function tiktokFloatPageController() {
       }
 
       const matchedDomCids = new Set();
-      merged = apiBucket.items.map((c, idx) => {
-        const replies = NET.repliesByComment.get(c.cid) || [];
-        const fp = commentFingerprint(c.authorName, c.authorHandle, c.text, c.images, c.sticker);
-        const domMatch =
-          domByFp.get(fp) ||
-          (c.text ? domByFp.get('txt:' + c.text.toLowerCase().trim()) : null) ||
-          domList.find((d) => c.authorName && d.authorName === c.authorName && idx === d.domIndex);
-        if (domMatch) matchedDomCids.add(domMatch.cid);
+      merged = apiBucket.items
+        .filter((c) => !isNumericId || !c.awemeId || c.awemeId === videoId)
+        .map((c, idx) => {
+          const replies = NET.repliesByComment.get(c.cid) || [];
+          const fp = commentFingerprint(c.authorName, c.authorHandle, c.text, c.images, c.sticker);
+          const domMatch =
+            domByFp.get(fp) ||
+            (c.text ? domByFp.get('txt:' + c.text.toLowerCase().trim()) : null) ||
+            domList.find((d) => c.authorName && d.authorName === c.authorName && idx === d.domIndex);
+          if (domMatch) matchedDomCids.add(domMatch.cid);
 
-        const images =
-          c.images && c.images.length
-            ? c.images
-            : domMatch && domMatch.images
-              ? domMatch.images
-              : [];
-        const diggCount =
-          Number(c.diggCount) > 0
-            ? Number(c.diggCount)
-            : domMatch
-              ? Number(domMatch.diggCount || 0)
-              : 0;
-        const diggText =
-          (domMatch && domMatch.diggText) || (diggCount > 0 ? formatCompact(diggCount) : '');
-        const userDigged = domMatch ? Boolean(domMatch.userDigged || c.userDigged) : Boolean(c.userDigged);
-        return {
-          ...c,
-          diggCount,
-          diggText,
-          userDigged,
-          images,
-          domIndex: domMatch ? domMatch.domIndex : idx,
-          replies: replies.length ? replies : domMatch ? domMatch.replies : [],
-          hasMoreReplies:
-            c.replyCount > replies.length || (domMatch ? domMatch.hasMoreReplies : false)
-        };
-      });
+          const images =
+            c.images && c.images.length
+              ? c.images
+              : domMatch && domMatch.images
+                ? domMatch.images
+                : [];
+          const diggCount =
+            Number(c.diggCount) > 0
+              ? Number(c.diggCount)
+              : domMatch
+                ? Number(domMatch.diggCount || 0)
+                : 0;
+          const diggText =
+            (domMatch && domMatch.diggText) || (diggCount > 0 ? formatCompact(diggCount) : '');
+          const userDigged = domMatch ? Boolean(domMatch.userDigged || c.userDigged) : Boolean(c.userDigged);
+          return {
+            ...c,
+            awemeId: c.awemeId || (isNumericId ? videoId : ''),
+            diggCount,
+            diggText,
+            userDigged,
+            images,
+            domIndex: domMatch ? domMatch.domIndex : idx,
+            replies: replies.length ? replies : domMatch ? domMatch.replies : [],
+            hasMoreReplies:
+              c.replyCount > replies.length || (domMatch ? domMatch.hasMoreReplies : false)
+          };
+        });
 
-      // Добавляем оставшиеся накопленные DOM-комментарии строго в конец (не удаляя и не ломая порядок)
-      for (const domItem of domList) {
-        if (matchedDomCids.has(domItem.cid)) continue;
-        const exists = merged.some(
-          (m) =>
-            m.authorName === domItem.authorName &&
-            m.text === domItem.text &&
-            (m.images?.length || 0) === (domItem.images?.length || 0)
-        );
-        if (!exists) merged.push(domItem);
+      // Добавляем оставшиеся DOM-комментарии ТОЛЬКО если сайдбар подтверждённо принадлежит ЭТОМУ видео
+      if (!domResult.staleMismatch) {
+        for (const domItem of domList) {
+          if (isNumericId && domItem.awemeId && domItem.awemeId !== videoId) continue;
+          if (matchedDomCids.has(domItem.cid)) continue;
+          const exists = merged.some(
+            (m) =>
+              m.authorName === domItem.authorName &&
+              m.text === domItem.text &&
+              (m.images?.length || 0) === (domItem.images?.length || 0)
+          );
+          if (!exists) merged.push(domItem);
+        }
       }
     } else {
-      merged = domList;
+      merged = domList.filter((d) => !isNumericId || !d.awemeId || d.awemeId === videoId);
     }
 
-    if (merged.length > 0) {
+    if (merged.length > 0 || (apiBucket && apiBucket.loaded)) {
       S.commentsLoading = false;
     }
 
@@ -2157,8 +2481,11 @@ function tiktokFloatPageController() {
     const loginBar = Boolean(document.querySelector('[data-e2e="comment-login-bar"]'));
     const loggedIn = hasInput ? true : loginBar ? false : isLoggedInHeuristic();
 
+    const apiConfirmedEmpty = Boolean(apiBucket && apiBucket.loaded && apiBucket.items.length === 0);
     const stillLoading =
-      merged.length === 0 && (S.commentsLoading || domResult.skeletons > 0);
+      !apiConfirmedEmpty &&
+      merged.length === 0 &&
+      (S.commentsLoading || domResult.skeletons > 0 || domResult.staleMismatch);
 
     return {
       videoId,
@@ -2172,6 +2499,8 @@ function tiktokFloatPageController() {
         (apiBucket && apiBucket.hasMore) || (total > merged.length && merged.length > 0)
       ),
       loading: stillLoading,
+      staleDom: Boolean(domResult.staleMismatch),
+      sidebarVideoId: domResult.sidebarVideoId || '',
       loggedIn,
       canComment: hasInput,
       sidebarOpen: isCommentsSidebarOpen(),
@@ -2605,11 +2934,32 @@ function tiktokFloatPageController() {
       enforceLiveGuard(item, video, true);
     }
 
-    if (S.commentsOpen && videoId && S.currentVideoId && videoId !== S.currentVideoId) {
+    if (videoId && videoId !== S.currentVideoId) {
+      // Запоминаем отпечатки комментариев прошлого ролика для защиты от устаревшего DOM сайдбара
+      const prevId = S.currentVideoId;
+      if (prevId) {
+        const fps = new Set();
+        const prevDom = S.domCommentsByVideo.get(prevId);
+        if (prevDom) {
+          for (const c of prevDom.values()) {
+            fps.add(commentFingerprint(c.authorName, c.authorHandle, c.text, c.images, c.sticker));
+          }
+        }
+        const prevApi = NET.commentsByVideo.get(prevId);
+        if (prevApi && Array.isArray(prevApi.items)) {
+          for (const c of prevApi.items) {
+            fps.add(commentFingerprint(c.authorName, c.authorHandle, c.text, c.images, c.sticker));
+          }
+        }
+        if (fps.size > 0) S.prevVideoCommentFps = fps;
+      }
       S.currentVideoId = videoId;
-      S.commentsLoading = true;
+      S.videoSwitchedAt = Date.now();
       S.lastCommentsHash = '';
-      setTimeout(() => emitComments(true), 80);
+      if (S.commentsOpen) {
+        S.commentsLoading = !NET.commentsByVideo.has(videoId);
+        setTimeout(() => emitComments(true), 50);
+      }
     }
 
     const authorHandle = extractAuthorHandle(item) || meta.authorHandle || '';
@@ -2872,8 +3222,12 @@ function tiktokFloatPageController() {
     return status();
   }
 
-  NET.listeners.push((kind) => {
+  NET.listeners.push((kind, payload) => {
     if (kind === 'comments' || kind === 'replies' || kind === 'comment-published') {
+      if (payload && payload.awemeId) {
+        const activeId = extractVideoId(activeFeedItem(), activeVideo());
+        if (activeId && payload.awemeId !== activeId) return;
+      }
       S.commentsLoading = false;
       emitComments(false);
     }
@@ -2945,8 +3299,18 @@ function tiktokFloatPageController() {
     return false;
   }
 
+  function clearDomCommentsForCurrent() {
+    const videoId = extractVideoId(activeFeedItem(), activeVideo());
+    if (videoId) {
+      S.domCommentsByVideo.delete(videoId);
+      S.lastCommentsHash = '';
+      S.commentsLoading = !NET.commentsByVideo.has(videoId);
+    }
+    return videoId || '';
+  }
+
   window[KEY] = {
-    version: 13,
+    version: 14,
     openFriendsSpa,
     configure,
     status,
@@ -2955,6 +3319,8 @@ function tiktokFloatPageController() {
       S.lastNavDir = dir < 0 ? -1 : 1;
       return S.lastNavDir;
     },
+    detectSidebarVideoId,
+    clearDomCommentsForCurrent,
     togglePlay,
     setPaused,
     seekTo,
